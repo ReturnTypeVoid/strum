@@ -1,0 +1,74 @@
+# Preprocessing Configuration
+
+# Audio settings
+audio:
+  sample_rate: 44100
+  mono: false  # Keep stereo for Demucs, convert later
+  target_lufs: -14.0
+  supported_formats: [".wav", ".mp3", ".flac", ".ogg", ".m4a"]
+
+# Demucs separation
+demucs:
+  model: htdemucs
+  device: cuda  # or "cpu"
+  shifts: 1     # Number of random shifts for better quality (more = slower)
+  overlap: 0.25
+  split: true   # Split into segments for memory efficiency
+  segment_length: 7.8  # Max segment length in seconds for HT Demucs
+  
+  # Output stems
+  stems:
+    - drums
+    - bass  
+    - vocals
+    - other
+
+# Chart parsing
+parsing:
+  # Supported chart formats
+  formats: [".mid", ".chart"]
+  
+  # MIDI parsing
+  midi:
+    ticks_per_beat: 480
+    drum_track_names: ["PART DRUMS", "PART REAL_DRUMS_PS", "drums"]
+    
+  # .chart parsing
+  chart:
+    resolution: 192
+    difficulties: ["Expert", "Hard", "Medium", "Easy"]
+
+# Dataset split
+split:
+  train_ratio: 0.85
+  test_ratio: 0.15
+  seed: 42
+  # Use deterministic hash-based split for reproducibility
+  hash_based: true
+
+# Audio-chart alignment
+alignment:
+  enabled: true
+  method: cross_correlation
+  max_offset_ms: 100
+  search_resolution_ms: 1
+
+# Output settings
+output:
+  # Stem output format
+  stem_format: wav
+  stem_sample_rate: 44100
+  stem_bit_depth: 16
+  
+  # Manifest
+  manifest_name: manifest.json
+  
+# Parallel processing
+parallel:
+  enabled: true
+  max_workers: 4
+  
+# Logging
+logging:
+  level: INFO
+  progress_bar: true

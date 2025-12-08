@@ -1,0 +1,96 @@
+# Inference Configuration
+
+# General settings
+general:
+  device: cuda  # or "cpu"
+  batch_size: 1
+  
+# Model paths (override via CLI)
+models:
+  drums: ./checkpoints/drums_v2/best.pt
+  # Future models:
+  # guitar: ./checkpoints/guitar/best.pt
+  # bass: ./checkpoints/bass/best.pt
+  # vocals: ./checkpoints/vocals/best.pt
+  # keys: ./checkpoints/keys/best.pt
+
+# Demucs separation (same as preprocessing)
+demucs:
+  model: htdemucs
+  device: cuda
+  shifts: 1
+  overlap: 0.25
+
+# Drums inference
+drums:
+  onset_threshold: 0.58  # Optimized from evaluation (F1=0.402 on 1352-song dataset)
+  cymbal_threshold: 0.5
+  velocity_threshold: 0.1
+  nms_window_frames: 5  # Peak picking window in frames
+  min_note_gap_ms: 20
+  tolerance_ms: 50  # Evaluation tolerance window
+
+# Guitar/Bass (rule-based)
+guitar:
+  enabled: false  # Enable when implemented
+  hopo_threshold_ms: 170
+  chord_max_notes: 3
+  open_note_threshold: 47  # MIDI note below this = open
+  
+bass:
+  enabled: false
+  hopo_threshold_ms: 170
+  chord_max_notes: 2
+  open_note_threshold: 44
+
+# Vocals
+vocals:
+  enabled: false
+  harmony_threshold: 0.30  # Min presence ratio for harmony inclusion
+  min_note_duration_ms: 50
+  pitch_smoothing: true
+
+# Pro Keys
+keys:
+  enabled: false
+  velocity_scale: 1.0
+  min_note_duration_ms: 30
+
+# Chart export
+export:
+  format: mid  # or "chart"
+  
+  # MIDI settings
+  midi:
+    ticks_per_beat: 480
+    
+  # Difficulties to generate
+  difficulties:
+    - Expert
+    - Hard
+    - Medium
+    - Easy
+    
+  # Difficulty reduction settings
+  difficulty:
+    hard:
+      max_notes_per_second: 9
+      max_chord_size: 3
+      remove_ghost_notes: true
+    medium:
+      max_notes_per_second: 6
+      max_chord_size: 2
+      remove_ghost_notes: true
+      simplify_rolls: true
+    easy:
+      max_notes_per_second: 4
+      max_chord_size: 1
+      remove_ghost_notes: true
+      simplify_rolls: true
+      downbeats_only: true
+
+# Logging
+logging:
+  level: INFO
+  progress_bar: true
+  save_intermediate: false  # Save stem files

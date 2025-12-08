@@ -1,0 +1,55 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# --- Virtual environments ---
+venv/
+.venv/
+strum-env/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- ML artifacts ---
+checkpoints/
+wandb/
+*.pt
+*.pth
+*.ckpt
+
+# --- Audio / generated outputs ---
+output/
+outputs/
+*.ogg
+*.wav
+*.mp3
+*.flac
+
+# --- Archive (old versions, not for repo) ---
+_archive/
+
+# --- Data (symlinks to /mnt/ml-data) ---
+input/
+ground_truth/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Hydra outputs ---
+outputs/
+multirun/
+
+# --- Misc ---
+*.log
+*.bak
