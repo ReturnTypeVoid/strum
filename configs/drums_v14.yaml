@@ -1,0 +1,129 @@
+# Drums V14 — Full-Song Training with Flash Attention
+#
+# Evolution from V13 (83.8% F1 with 5s segments):
+#
+#   1. Full-song context: Each training example is an entire song (2-6 min).
+#      The model sees the full drum kit "calibration" — toms at the start of
+#      a song inform classification throughout. This is the primary fix for
+#      rare class confusion (HighTom↔Snare, LowTom↔Kick).
+#
+#   2. Flash Attention (SDPA): Q/K/V cast to fp16 for the Flash kernel,
+#      all other computation stays fp32 (safe for focal loss with high
+#      pos_weight). 10 heads × 128 dim = 1280 (same capacity as 8×160).
+#      Full attention over entire songs: 4-min → 17.6 GB, 6-min → 26 GB.
+#
+#   3. Gradient accumulation: batch=1 (variable-length songs) × accum=8
+#      = effective batch of 8 songs. Matches V13's effective sample volume.
+#
+#   4. Warm-start from V13 best checkpoint. Q/K/V/O linear layers are
+#      (1280, 1280) regardless of num_heads — weights transfer directly.
+#
+# Target: All 8 classes >90% F1
+# Running on: DGX Spark (GB10, 128GB unified, 20-core ARM)
+
+paths:
+  data_dir: "/mnt/ml-data/dataset_drums"
+  output_dir: "outputs/drums_v14"
+  checkpoint_dir: "checkpoints/drums_v14"
+
+# Model Configuration
+model:
+  type: "two_stage_crnn"
+  sample_rate: 44100
+  n_mels: 128
+  hop_length: 512
+  n_fft: 2048
+
+  # CNN encoder (shared backbone) — same as V13
+  conv_channels: [64, 128, 256, 512]
+
+  # Frequency sub-band config — same as V13
+  freq_subbands: [32, 64, 96, 128]
+  subband_proj_dim: 256
+
+  # Temporal modeling
+  lstm_hidden: 640
+  lstm_layers: 3
+  attention_heads: 10          # 10 × 128 = 1280 (Flash requires head_dim ≤ 128)
+  attention_type: "flash"      # Use SDPA Flash Attention kernel
+  attention_window: 512        # Ignored when attention_type=flash, kept for compat
+  dropout: 0.3
+
+  # Stage 1: Onset detection head — same as V13
+  onset_detector_hidden: 320
+
+  # Stage 2: Onset classification head — same as V13
+  classifier_hidden: 640
+  num_classes: 8
+
+  predict_velocity: true
+
+# Training Configuration
+training:
+  batch_size: 1               # One full song per forward pass
+  accumulation_steps: 8       # Effective batch = 8 songs
+  epochs: 40
+  
+  learning_rate: 0.00003      # 3e-5: epoch 1 at ~3.7e-5 was best — stay in that range
+  min_lr: 0.000003
+  weight_decay: 0.0001
+  warmup_epochs: 1              # Gentle ramp: ~1.5e-5 → 3e-5 in 1 epoch
+  
+  checkpoint_every: 5
+  early_stop_patience: 15
+  f1_eval_interval: 2
+  max_train_batches: 500      # 500 songs/epoch × ~4min = ~33h audio, ~3h wall
+  max_val_batches: 200        # 200 songs for val/F1 — ~40min
+
+  num_workers: 4              # More workers to hide NFS latency
+  pin_memory: false           # Spark: unified memory
+  gradient_clip: 1.0
+
+  # Warm-start from V13 best checkpoint
+  warm_start: "checkpoints/drums_v13/best_f1.pt"
+
+  # Memory safety — also cuts the 10-min tail that slows epochs
+  max_song_duration_sec: 360  # Skip songs > 6 min
+
+# Loss Configuration — same as V13 (proven effective)
+loss:
+  onset_pos_weight: 20.0
+  onset_focal_gamma: 2.0
+  classify_class_weight: [1.0, 1.2, 1.1, 50.0, 5.0, 45.0, 8.0, 25.0]
+  classify_focal_gamma: 1.0
+  classify_label_smoothing: 0.05
+  onset_loss_weight: 1.0
+  classify_loss_weight: 2.0
+  velocity_loss_weight: 0.3
+
+# Augmentation — lightweight only (no time-stretch for full songs)
+augmentation:
+  enabled: true
+  freq_mask_param: 27
+  time_mask_param: 50
+
+# Weights & Biases - DISABLED
+wandb:
+  project: null
+  entity: null
+  tags: []
+  log_freq: 50
+
+# Inference thresholds — start with V13 optimized, re-sweep after training
+inference:
+  onset_threshold: 0.5
+  class_thresholds:
+    Kick: 0.50
+    Snare: 0.55
+    HiHat: 0.50
+    HighTom: 0.80
+    Ride: 0.55
+    LowTom: 0.70
+    Crash: 0.60
+    FloorTom: 0.75
+
+# Dataset split
+split:
+  train_ratio: 0.85
+  test_ratio: 0.15
+  seed: 42
