@@ -1,0 +1,90 @@
+# Onset Window Classifier V6 — Tom-Specialist Ensemble Member
+#
+# V6 is designed to dramatically improve HighTom (58→70%+) and LowTom (68→80%+)
+# at the cost of slight regression on common classes. In the ensemble, V6
+# contributes primarily to tom classification while other models handle
+# Kick/Snare/HiHat/Ride/Crash.
+#
+# Key changes vs V4:
+#   1. Tom-boosted sampling: 50% of each batch is tom-positive (vs 12.5%)
+#      → model sees 4x more tom examples per epoch
+#   2. Per-class focal loss: gamma=2.0 ONLY for toms (0 for others)
+#      → hard tom examples (multi-label, confused) get more gradient signal
+#   3. Heavy tom class weights: HighTom=6, LowTom=5, FloorTom=3
+#      → tom errors dominate the loss function
+#   4. Warm-start from V4 (best individual model at 82.7%)
+#   5. No mixup: multi-label mixing dilutes rare class signal
+#   6. Wider pitch-shift for toms: ±6 mel bins (vs ±4 in V4)
+#
+# Warm-starts from V4, reuses V2 cache.
+
+paths:
+  data_dir: "/mnt/ml-data/dataset_drums"
+  output_dir: "outputs/onset_classifier_v6"
+  checkpoint_dir: "checkpoints/onset_classifier_v6"
+
+cache_dir: "outputs/onset_classifier/cache"
+
+# Tom-boosted batch sampling: 50% tom-positive, 50% other
+tom_boost_sampling:
+  enabled: true
+  tom_fraction: 0.5
+
+# Warm-start from V4 best checkpoint
+warm_start:
+  enabled: true
+  checkpoint: "checkpoints/onset_classifier_v4/best_f1.pt"
+
+dataset:
+  sample_rate: 44100
+  n_mels: 128
+  fine_n_fft: 1024
+  fine_hop: 256
+  coarse_n_fft: 4096
+  coarse_hop: 512
+  window_before_ms: 100
+  window_after_ms: 400
+  context_size: 4
+
+model:
+  num_classes: 8
+  branch_channels: [1, 32, 64, 128, 256]
+  context_size: 4
+  context_hidden: 64
+  spectral_dim: 48
+  classifier_hidden: 512
+  dropout: 0.3
+  use_freq_attn: false
+  use_hpss: true            # Same as V4
+  enhanced_spectral: true    # Same as V4
+
+training:
+  batch_size: 256
+  epochs: 80
+  learning_rate: 0.0003      # Lower LR — fine-tuning from V4
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  num_workers: 4
+  eval_interval: 2
+  checkpoint_every: 10
+  early_stop_patience: 20    # In eval intervals (= 40 epochs)
+  max_train_batches: 2000
+  max_val_batches: 500
+  mixup_alpha: 0.0           # No mixup — preserves rare class signal
+
+# Per-class focal loss: gamma=2 for toms ONLY, 0 for others
+# Heavy tom weights force model to prioritize tom discrimination
+loss:
+  class_weights: [0.3, 0.3, 0.3, 6.0, 0.3, 5.0, 0.3, 3.0]
+  focal_gamma: [0.0, 0.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0]
+  label_smoothing: 0.0
+
+augmentation:
+  noise_std: 0.005
+  gain_db_range: [-3.0, 3.0]
+  spec_augment: true
+  freq_mask_width: 12
+  time_mask_width: 8
+  # Wider pitch-shift range for toms handled by dataset default (±4)
+  # TODO: consider increasing to ±6 in dataset code for V6

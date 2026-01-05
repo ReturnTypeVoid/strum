@@ -1,0 +1,77 @@
+# Onset Window Classifier V2 — 8-class drum hit classification
+#
+# V2 improvements over V1 (81.0% → target 90%+):
+#   1. Longer windows: 100ms+400ms (was 50ms+200ms) — captures full decay
+#   2. SE attention in ResNet blocks — channel-wise feature selection
+#   3. Spectral features: centroid, bandwidth, band energies — explicit
+#      frequency discrimination for confused pairs (HighTom↔Snare etc)
+#   4. Deeper classifier head: 512→512→256→8 (was 256→256→8)
+#   5. Mixup augmentation — combats overfitting (train 0.012 vs val 0.14)
+#
+# Class distribution in training data (with balanced sampling):
+#   Kick:      1,165,156 (43.0%)    → sampled 12.5%
+#   Snare:       791,313 (29.2%)    → sampled 12.5%
+#   HiHat:       466,948 (17.2%)    → sampled 12.5%
+#   HighTom:      13,199 ( 0.5%)    → sampled 12.5%  ← 86x boost!
+#   Ride:        180,674 ( 6.7%)    → sampled 12.5%
+#   LowTom:       16,499 ( 0.6%)    → sampled 12.5%  ← 72x boost!
+#   Crash:        61,140 ( 2.3%)    → sampled 12.5%
+#   FloorTom:     15,981 ( 0.6%)    → sampled 12.5%  ← 72x boost!
+
+paths:
+  data_dir: "/mnt/ml-data/dataset_drums"
+  output_dir: "outputs/onset_classifier"
+  checkpoint_dir: "checkpoints/onset_classifier"
+
+# Dataset / mel configuration
+dataset:
+  sample_rate: 44100
+  n_mels: 128
+  # Dual resolution — captures both transient attack and tonal content
+  fine_n_fft: 1024       # ~23ms window — sharp transients
+  fine_hop: 256          # ~5.8ms resolution
+  coarse_n_fft: 4096     # ~93ms window — tonal/pitch content
+  coarse_hop: 512        # ~11.6ms resolution
+  # Longer windows to capture full attack + decay
+  window_before_ms: 100  # 100ms before onset — captures pre-hit context
+  window_after_ms: 400   # 400ms after — captures full decay (distinguishes toms)
+  # Onset context (neighboring hit classes)
+  context_size: 4        # 4 previous + 4 next = 8 neighbor onsets
+
+# Model architecture — V2 with SE + spectral features + deeper head
+model:
+  num_classes: 8
+  branch_channels: [1, 32, 64, 128, 256]  # ResNet-style CNN with SE blocks
+  context_size: 4
+  context_hidden: 64
+  spectral_dim: 32        # Spectral feature projection dimension
+  classifier_hidden: 512  # Deeper head (was 256)
+  dropout: 0.3
+  use_freq_attn: false    # V2 was trained without frequency attention
+
+# Training
+training:
+  batch_size: 256         # Small windows → large batches → stable gradients
+  epochs: 100             # More epochs — SE + spectral features need more warmup
+  learning_rate: 0.001
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  num_workers: 4
+  eval_interval: 2        # Evaluate every 2 epochs
+  checkpoint_every: 10
+  early_stop_patience: 20  # In eval intervals (= 40 epochs)
+  max_train_batches: 2000  # Cap per epoch (2000 × 256 = 512k samples)
+  max_val_batches: 500
+  mixup_alpha: 0.4        # Mixup augmentation — combats overfitting
+
+# Loss — mild class weighting ON TOP of balanced sampling
+loss:
+  class_weights: [1.0, 1.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.5]
+  #               Kick Snare HH   HTom Ride LTom Crash FTom
+  # Increased weights for the worst performers (HighTom, LowTom, FloorTom)
+
+# Augmentation
+augmentation:
+  noise_std: 0.005
+  gain_db_range: [-3.0, 3.0]  # Wider range for more variety

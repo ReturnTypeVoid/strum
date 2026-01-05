@@ -1,0 +1,93 @@
+# Onset Window Classifier V16 — Tom/Cymbal Discrimination Fix
+#
+# Core problem: All 5 ensemble models predict Crash at 0.87-1.00 for
+# spectrally obvious floor tom hits (centroid 391-966 Hz, 100% below 500 Hz).
+# CNN features (512 dims) overwhelm spectral features (48 dims, 8% of fused).
+#
+# V16 changes:
+#   1. use_lowfreq_spectral: Dedicated spectral centroid/bandwidth extraction
+#      from 30-2000 Hz mel, projected to spectral_dim — first-class feature path
+#      that CNN cannot suppress. Centroid <1000 Hz = tom signal.
+#   2. spectral_dim: 128 (up from 48) — spectral features now ~20% of fused vector
+#   3. use_dual_head: Separate tom classifier head (doesn't compete with cymbals)
+#   4. ASL loss: gamma_neg=[0,0,0,6,0,6,0,6] — aggressive neg suppression for toms
+#   5. class_weights: FloorTom 8x, LowTom 8x, HighTom 6x, Crash 0.3x
+#   6. tom_boost_sampling: 50% tom onsets per batch
+#   7. Warm start from V15 (best bleed-augmented model)
+#
+# Based on V15 architecture + new lowfreq spectral path
+
+paths:
+  data_dir: "/mnt/ml-data/dataset_drums"
+  output_dir: "outputs/onset_classifier_v16"
+  checkpoint_dir: "checkpoints/onset_classifier_v16"
+
+cache_dir: "outputs/onset_classifier/cache"
+bleed_cache_dir: "outputs/onset_classifier/cache_bleed"
+bleed_prob: 0.5
+
+dataset:
+  sample_rate: 44100
+  n_mels: 128
+  fine_n_fft: 1024
+  fine_hop: 256
+  coarse_n_fft: 4096
+  coarse_hop: 512
+  window_before_ms: 100
+  window_after_ms: 400
+  context_size: 4
+
+model:
+  num_classes: 8
+  branch_channels: [1, 32, 64, 128, 256]
+  context_size: 4
+  context_hidden: 64
+  spectral_dim: 128
+  classifier_hidden: 512
+  dropout: 0.3
+  use_freq_attn: false
+  use_hpss: true
+  enhanced_spectral: true
+  use_lowfreq_branch: true
+  use_lowfreq_spectral: true
+  use_dual_head: true
+  tom_head_hidden: 256
+
+training:
+  batch_size: 256
+  epochs: 80
+  learning_rate: 0.0005
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  num_workers: 0
+  eval_interval: 2
+  checkpoint_every: 5
+  early_stop_patience: 20
+  max_train_batches: 2000
+  max_val_batches: 500
+  mixup_alpha: 0.2
+
+loss:
+  # Crash:FloorTom data ratio is 4.4:1, but model confidence is 0.99:0.001
+  # Need extreme reweighting to overcome CNN bias
+  class_weights: [0.5, 0.5, 0.5, 6.0, 0.5, 8.0, 0.3, 8.0]
+  use_asl: true
+  gamma_neg: [0, 0, 0, 6, 0, 6, 0, 6]
+  gamma_pos: [1, 1, 1, 0, 1, 0, 1, 0]
+  clip: 0.05
+
+tom_boost_sampling:
+  enabled: true
+  tom_fraction: 0.5
+
+warm_start:
+  enabled: true
+  checkpoint: "checkpoints/onset_classifier_v15/best_f1.pt"
+
+augmentation:
+  noise_std: 0.005
+  gain_db_range: [-3.0, 3.0]
+  spec_augment: true
+  freq_mask_width: 12
+  time_mask_width: 8
