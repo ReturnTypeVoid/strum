@@ -469,7 +469,7 @@ class BatchPipeline:
             device = models["device"]
             
             # Stage 1: Onset detection
-            onset_times_ms = detect_onsets_v14(v14_model, drums_stem, device, onset_threshold=0.35)
+            onset_times_ms = detect_onsets_v14(v14_model, drums_stem, device, onset_threshold=0.30)
             logger.info(f"    Stage 1: {len(onset_times_ms)} onsets")
             
             if not onset_times_ms:

@@ -399,11 +399,12 @@ def remove_isolated_hits(
 ) -> DrumChart:
     """Remove isolated hits that are likely false positives.
 
-    A hit is "isolated" if it has fewer than min_neighbors hits on the same
-    lane within isolation_window_ms. This catches random false positives that
-    appear where there's no real pattern.
+    A hit is "isolated" if it has fewer than min_neighbors hits on ANY
+    cymbal/tom lane (2-4) within isolation_window_ms. Cross-lane awareness
+    preserves drum fills that sweep across toms (e.g., HiTom→MidTom→FloorTom)
+    where each lane only has 1-2 hits but the combined pattern is real.
 
-    Only applies to cymbal lanes (not kick/snare which can legitimately
+    Only applies to cymbal/tom lanes (not kick/snare which can legitimately
     have isolated hits like accents).
     """
     if not chart.hits:
@@ -412,14 +413,14 @@ def remove_isolated_hits(
     # Only filter cymbal/tom lanes (2-4), not kick (0) or snare (1)
     filterable_lanes = {2, 3, 4}
 
-    # Build per-lane sorted time lists (by lane only, ignoring is_cymbal,
-    # so that toms sharing a lane with cymbals aren't treated as isolated)
-    lane_times: dict[int, list[float]] = defaultdict(list)
+    # Build combined sorted time list across ALL filterable lanes.
+    # Fills sweep across toms quickly — a HiTom→MidTom→FloorTom fill has
+    # only 1-2 hits per lane but 3+ hits across lanes within 2s.
+    all_filterable_times: list[float] = []
     for hit in chart.hits:
         if hit.lane in filterable_lanes:
-            lane_times[hit.lane].append(hit.time_ms)
-    for key in lane_times:
-        lane_times[key].sort()
+            all_filterable_times.append(hit.time_ms)
+    all_filterable_times.sort()
 
     kept = []
     removed = 0
@@ -429,11 +430,9 @@ def remove_isolated_hits(
             kept.append(hit)
             continue
 
-        times = lane_times[hit.lane]
-
-        # Count neighbors within window (any hit on same lane)
+        # Count cross-lane neighbors (any hit on lanes 2-4 within window)
         neighbors = sum(
-            1 for t in times
+            1 for t in all_filterable_times
             if t != hit.time_ms and abs(t - hit.time_ms) < isolation_window_ms
         )
 
