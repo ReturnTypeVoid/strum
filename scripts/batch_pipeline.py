@@ -101,22 +101,32 @@ class BatchPipeline:
         self.use_v11 = use_v11
         
         # Lazy-load engines
-        self._drums_engine = None
+        self._drums_models = None
         self._vocals_charter = None
         self._keys_charter = None
     
     @property
-    def drums_engine(self):
-        """Lazy load drums inference engine."""
-        if self._drums_engine is None and self.include_drums:
-            from src.inference.drums_cli import DrumsInferenceEngine
-            logger.info(f"Loading drums model ({'V11' if self.use_v11 else 'V6'})...")
-            self._drums_engine = DrumsInferenceEngine(
-                checkpoint_path=self.drums_checkpoint,
-                device=self.device,
-                use_v11=self.use_v11,
-            )
-        return self._drums_engine
+    def drums_models(self):
+        """Lazy load drums V14 onset detector + ensemble."""
+        if self._drums_models is None and self.include_drums:
+            try:
+                from batch_infer_hybrid import load_v14_onset_detector, load_ensemble
+                import torch
+                device = torch.device(self.device) if self.device else (
+                    torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+                )
+                logger.info("Loading drums V14 onset detector + ensemble...")
+                v14_model = load_v14_onset_detector(device)
+                ensemble = load_ensemble(device)
+                self._drums_models = {
+                    "v14": v14_model,
+                    "ensemble": ensemble,
+                    "device": device,
+                }
+            except Exception as e:
+                logger.warning(f"  ⚠ Could not load drums models: {e}")
+                self._drums_models = {}
+        return self._drums_models
     
     @property
     def vocals_charter(self):
@@ -210,12 +220,20 @@ class BatchPipeline:
     def analyze_audio(self, audio_path: Path, artist: str = '', title: str = '') -> Dict:
         """Analyze audio for tempo, duration, and metadata."""
         y, sr = librosa.load(str(audio_path), sr=22050, mono=True)
-        
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-        if hasattr(tempo, '__len__'):
-            tempo = float(tempo[0])
-        
         duration_sec = len(y) / sr
+        
+        # Use grid-alignment BPM refinement from drums pipeline if available
+        try:
+            from batch_infer_hybrid import analyze_audio as drums_analyze
+            audio_info = drums_analyze(audio_path)
+            tempo = audio_info["tempo_bpm"]
+            logger.info(f"  BPM (grid-aligned): {tempo:.1f}")
+        except Exception:
+            # Fallback: librosa.feature.rhythm.tempo (not beat_track which gives subharmonics)
+            tempo = librosa.feature.rhythm.tempo(y=y, sr=sr)
+            if hasattr(tempo, '__len__'):
+                tempo = float(tempo[0])
+            logger.info(f"  BPM (librosa): {tempo:.1f}")
         
         # Find good preview point (skip intro)
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
@@ -426,22 +444,73 @@ class BatchPipeline:
         return stems
     
     def transcribe_drums(self, drums_stem: Path, tempo_bpm: float):
-        """Transcribe drums using trained model."""
+        """Transcribe drums using V14 hybrid pipeline."""
         if not self.include_drums:
             return None
         
-        logger.info("  Transcribing drums...")
+        logger.info("  Transcribing drums (V14 hybrid)...")
         
         try:
-            thresholds = {i: 0.5 for i in range(5)}
-            chart = self.drums_engine.transcribe(
-                str(drums_stem),
-                thresholds=thresholds,
-                tempo_bpm=tempo_bpm
+            models = self.drums_models
+            if not models or "v14" not in models:
+                logger.warning("  ⚠ Drums models not loaded, skipping")
+                return None
+            
+            from batch_infer_hybrid import (
+                detect_onsets_v14, extract_onset_windows, classify_onsets_ensemble,
+                build_context_vectors, build_chart, postprocess_chart,
+                _compute_spectral_centroid_features, analyze_audio,
             )
+            from src.preprocessing.parsers.midi_parser import DrumChart, TimeSignature
+            import numpy as np
+            
+            v14_model = models["v14"]
+            ensemble = models["ensemble"]
+            device = models["device"]
+            
+            # Stage 1: Onset detection
+            onset_times_ms = detect_onsets_v14(v14_model, drums_stem, device, onset_threshold=0.35)
+            logger.info(f"    Stage 1: {len(onset_times_ms)} onsets")
+            
+            if not onset_times_ms:
+                return None
+            
+            # Stage 2: Extract windows + classify
+            any_needs_cqt = any(e["needs_cqt"] for e in ensemble)
+            windows = extract_onset_windows(drums_stem, onset_times_ms, needs_cqt=any_needs_cqt)
+            
+            # Two-pass context classification
+            context = build_context_vectors(onset_times_ms)
+            logits_pass1 = classify_onsets_ensemble(ensemble, windows, context, device)
+            probs_pass1 = 1.0 / (1.0 + np.exp(-logits_pass1))
+            context = build_context_vectors(onset_times_ms, probs_pass1)
+            logits = classify_onsets_ensemble(ensemble, windows, context, device)
+            probs = 1.0 / (1.0 + np.exp(-logits))
+            
+            # Spectral features
+            spectral_centroids, spectral_high_pcts = _compute_spectral_centroid_features(
+                drums_stem, onset_times_ms
+            )
+            
+            # Build + post-process chart
+            audio_info = analyze_audio(drums_stem)
+            chart = build_chart(
+                onset_times_ms, probs, windows["valid_mask"],
+                tempo_events=audio_info["tempo_events"],
+                spectral_centroids=spectral_centroids,
+                spectral_high_pcts=spectral_high_pcts,
+            )
+            
+            if chart.hits:
+                chart = postprocess_chart(chart)
+            
+            logger.info(f"    Drums: {len(chart.hits)} Expert hits")
             return chart
+            
         except Exception as e:
             logger.warning(f"  ⚠ Drums transcription failed: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def transcribe_guitar(self, other_stem: Path, tempo_bpm: float):

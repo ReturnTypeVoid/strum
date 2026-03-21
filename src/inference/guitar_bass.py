@@ -57,7 +57,7 @@ class GuitarChart:
 
 def transcribe_guitar(
     audio_path: Path,
-    tempo_bpm: float = 120.0,
+    tempo_bpm: float = 0.0,
     confidence_threshold: float = 0.3,
     is_bass: bool = False,
 ) -> GuitarChart:
@@ -66,7 +66,7 @@ def transcribe_guitar(
 
     Args:
         audio_path: Path to the audio stem (other.wav for guitar, bass.wav for bass).
-        tempo_bpm: Song tempo in BPM.
+        tempo_bpm: Song tempo in BPM. If 0, auto-detect from audio.
         confidence_threshold: Onset detection sensitivity (lower = more notes).
         is_bass: If True, use bass-specific parameters.
 
@@ -81,7 +81,13 @@ def transcribe_guitar(
 
     if len(y) < sr:
         logger.warning(f"Audio too short ({duration_sec:.1f}s), returning empty chart")
-        return GuitarChart(tempo_bpm=tempo_bpm, instrument="bass" if is_bass else "guitar")
+        return GuitarChart(tempo_bpm=tempo_bpm or 120.0, instrument="bass" if is_bass else "guitar")
+
+    # Auto-detect tempo if not provided
+    if tempo_bpm <= 0:
+        tempo_arr = librosa.feature.rhythm.tempo(y=y, sr=sr)
+        tempo_bpm = float(tempo_arr[0]) if hasattr(tempo_arr, '__len__') else float(tempo_arr)
+        logger.info(f"Auto-detected tempo: {tempo_bpm:.1f} BPM")
 
     # --- Stage 1: Onset detection ---
     onset_times = _detect_onsets(y, sr, hop_length, tempo_bpm, confidence_threshold, is_bass)
@@ -665,7 +671,7 @@ def _quantize_to_grid(
     onset_times: np.ndarray,
     tempo_bpm: float,
     grid: str = '1/16',
-    strength: float = 0.8,
+    strength: float = 1.0,
 ) -> np.ndarray:
     """
     Soft quantization to beat grid.

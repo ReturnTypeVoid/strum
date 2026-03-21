@@ -177,7 +177,7 @@ def build_onset_classifier(config) -> OnsetClassifier:
 def load_ensemble(device: torch.device) -> list[dict]:
     """Load all onset classifier ensemble models."""
     models = []
-    for entry in ENSEMBLE_MODELS:
+    for eidx, entry in enumerate(ENSEMBLE_MODELS):
         name = entry["name"]
         cfg_path = entry["config"]
         ckpt_path = entry["checkpoint"]
@@ -201,6 +201,7 @@ def load_ensemble(device: torch.device) -> list[dict]:
             "model": model,
             "config": config,
             "needs_cqt": needs_cqt,
+            "ensemble_idx": eidx,  # original index in ENSEMBLE_MODELS for weight lookup
         })
 
     logger.info(f"  Loaded {len(models)} ensemble models")
@@ -611,12 +612,23 @@ def classify_onsets_ensemble(
 
     # Per-class weighted average of logits
     # Each model gets a different weight for each class
+    # Use ensemble_idx to map loaded models to their weight positions
     weighted_logits = np.zeros((N, 8), dtype=np.float32)
     for c in range(8):
         weights = PER_CLASS_WEIGHTS[c]
-        for model_idx, w in enumerate(weights):
+        total_w = 0.0
+        for model_idx, entry in enumerate(ensemble):
+            eidx = entry.get("ensemble_idx", model_idx)
+            if eidx < len(weights):
+                w = weights[eidx]
+            else:
+                w = 0.0
             if w > 0:
                 weighted_logits[:, c] += w * all_logits[model_idx][:, c]
+                total_w += w
+        # Renormalize if some models were missing
+        if total_w > 0 and total_w < 0.99:
+            weighted_logits[:, c] /= total_w
 
     return weighted_logits  # return logits; sigmoid applied after spectral correction
 
