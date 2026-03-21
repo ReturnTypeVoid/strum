@@ -541,11 +541,21 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
 
     chart = enforce_min_gap(chart, min_gap_ms=20.0)
 
-    # Always use 48th note grid — 32nd is too coarse for snare rolls
-    # at moderate tempos (e.g., 83.5 BPM: 32nd=89.8ms but rolls are ~81ms apart,
-    # causing 20-30% of roll notes to dedup). 48th (59.9ms) captures them;
-    # 64th adds nothing beyond 48th.
-    subdiv = 48
+    # Tempo-adaptive quantization: pick the finest standard subdivision
+    # whose grid spacing stays above the V14 detector floor (20ms).
+    # This ensures rolls/fills are preserved at any tempo while avoiding
+    # false note splits from quantization noise.
+    tempo = chart.tempo_events[0].tempo_bpm if chart.tempo_events else 120
+    ms_per_beat = 60_000.0 / tempo
+    # Standard subdivisions (finest to coarsest) that divide 480 ticks evenly
+    MIN_GRID_MS = 20.0  # V14 onset detector min_distance_ms
+    for subdiv in [192, 96, 64, 48, 32, 24, 16, 12, 8, 4]:
+        grid_ms = ms_per_beat / (subdiv / 4)
+        if grid_ms >= MIN_GRID_MS:
+            break
+    else:
+        subdiv = 4
+    logger.info(f"  Quantization grid: {subdiv}th notes ({ms_per_beat / (subdiv / 4):.1f}ms at {tempo:.1f} BPM)")
 
     chart = quantize_hits(chart, max_subdivision=subdiv)
     chart = resolve_playability(chart)
