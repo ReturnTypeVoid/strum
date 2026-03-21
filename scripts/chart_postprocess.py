@@ -27,13 +27,41 @@ logger = logging.getLogger(__name__)
 # 1. Rhythmic quantization
 # ══════════════════════════════════════════════════════════════
 
-def quantize_hits(chart: DrumChart, max_subdivision: int = 16) -> DrumChart:
+def _compute_phase_offset(times_ms: list[float], grid_ms: float) -> float:
+    """Find the grid phase offset that best aligns with the given hit times.
+
+    Uses circular statistics: treat each hit's fractional position in the
+    grid as an angle on a circle, then find the mean angle. This is robust
+    to hits on different beats/bars — only the within-grid-cell position
+    matters.
+
+    Args:
+        times_ms: Onset times in milliseconds.
+        grid_ms: Grid spacing in milliseconds.
+
+    Returns:
+        Phase offset in ms (0 ≤ offset < grid_ms).
+    """
+    if not times_ms:
+        return 0.0
+    phases = np.array([(t % grid_ms) / grid_ms * 2 * np.pi for t in times_ms])
+    mean_angle = np.arctan2(np.mean(np.sin(phases)), np.mean(np.cos(phases)))
+    if mean_angle < 0:
+        mean_angle += 2 * np.pi
+    offset = mean_angle / (2 * np.pi) * grid_ms
+    return offset
+
+
+def quantize_hits(chart: DrumChart, max_subdivision: int = 16,
+                  phase_offset_ms: float | None = None) -> DrumChart:
     """Snap hit times to the nearest beat subdivision.
 
     Args:
         chart: Input drum chart
         max_subdivision: Maximum subdivision to quantize to (8=8th notes,
             16=16th notes, 32=32nd notes). Higher = less quantization.
+        phase_offset_ms: Grid phase offset. If None, auto-computed from
+            hit times using circular statistics.
 
     Returns:
         New DrumChart with quantized hit times.
@@ -46,11 +74,18 @@ def quantize_hits(chart: DrumChart, max_subdivision: int = 16) -> DrumChart:
     # Grid spacing: one subdivision
     grid_ms = ms_per_beat / (max_subdivision / 4)
 
+    # Compute phase offset if not provided
+    if phase_offset_ms is None:
+        all_times = [h.time_ms for h in chart.hits]
+        phase_offset_ms = _compute_phase_offset(all_times, grid_ms)
+    logger.info(f"  Grid phase offset: {phase_offset_ms:.1f}ms "
+                f"({phase_offset_ms/grid_ms:.3f} of grid)")
+
     new_hits = []
     for hit in chart.hits:
-        # Find nearest grid point
-        grid_pos = round(hit.time_ms / grid_ms)
-        snapped_ms = grid_pos * grid_ms
+        # Find nearest grid point, accounting for phase offset
+        grid_pos = round((hit.time_ms - phase_offset_ms) / grid_ms)
+        snapped_ms = phase_offset_ms + grid_pos * grid_ms
 
         # Only snap if within a reasonable window (half a grid cell)
         if abs(hit.time_ms - snapped_ms) <= grid_ms / 2:
@@ -82,7 +117,8 @@ def quantize_hits(chart: DrumChart, max_subdivision: int = 16) -> DrumChart:
 # ══════════════════════════════════════════════════════════════
 
 def regularize_runs(chart: DrumChart, max_subdivision: int = 16,
-                    min_run_length: int = 4) -> DrumChart:
+                    min_run_length: int = 4,
+                    phase_offset_ms: float = 0.0) -> DrumChart:
     """Fix uneven spacing in fast same-lane runs caused by detector jitter.
 
     The V14 onset detector has HOP=512 (11.6ms frame) resolution. When the
@@ -200,6 +236,100 @@ def regularize_runs(chart: DrumChart, max_subdivision: int = 16,
     removed = len(new_hits) - len(deduped)
     logger.info(f"  Run regularization: {total_regularized} hits in runs re-spaced"
                 f" (dominant gap preserved, {removed} dupes removed)")
+
+    return replace(chart, hits=deduped)
+
+
+def coarsen_non_runs(chart: DrumChart, fine_subdivision: int = 96,
+                     coarse_subdivision: int = 32,
+                     run_gap_threshold: int = 4,
+                     phase_offset_ms: float = 0.0) -> DrumChart:
+    """Re-snap isolated notes to a coarser grid to eliminate jitter.
+
+    The fine adaptive grid (e.g. 96th) preserves fast-roll timing, but for
+    normal playing (8ths, 16ths, quarters) it's too fine: a ~30ms detector
+    jitter snaps notes to positions one 96th-note off from the correct 32nd
+    position, producing beat positions like 0.417 instead of 0.5.
+
+    This function identifies notes that are NOT part of fast runs (gap to
+    nearest same-lane neighbor > run_gap_threshold fine-grid steps) and
+    re-snaps them to the coarser 32nd-note grid.
+
+    Args:
+        chart: Drum chart (already fine-quantized and regularized).
+        fine_subdivision: The fine subdivision used for initial quantization.
+        coarse_subdivision: Target coarser grid for non-run notes.
+        run_gap_threshold: Max gap in fine-grid units to consider part of a run.
+
+    Returns:
+        New DrumChart with non-run notes snapped to the coarse grid.
+    """
+    if not chart.hits or not chart.tempo_events:
+        return chart
+
+    tempo_bpm = chart.tempo_events[0].tempo_bpm
+    ms_per_beat = 60_000.0 / tempo_bpm
+    fine_grid_ms = ms_per_beat / (fine_subdivision / 4)
+    coarse_grid_ms = ms_per_beat / (coarse_subdivision / 4)
+
+    # If grids are the same, nothing to do
+    if fine_subdivision <= coarse_subdivision:
+        return chart
+
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+
+    # Build per-lane sorted time lists
+    lane_times: dict[tuple[int, bool], list[float]] = defaultdict(list)
+    for hit in hits_sorted:
+        lane_times[(hit.lane, hit.is_cymbal)].append(hit.time_ms)
+
+    # Determine which hits are in fast runs
+    in_run: set[int] = set()
+    for idx, hit in enumerate(hits_sorted):
+        key = (hit.lane, hit.is_cymbal)
+        times = lane_times[key]
+        # Binary search for neighbors within run_gap_threshold
+        import bisect
+        pos = bisect.bisect_left(times, hit.time_ms)
+        threshold_ms = run_gap_threshold * fine_grid_ms
+        has_close_neighbor = False
+        # Check left neighbor
+        if pos > 0 and (hit.time_ms - times[pos - 1]) <= threshold_ms:
+            has_close_neighbor = True
+        # Check right neighbor
+        if pos < len(times) - 1 and (times[pos + 1] - hit.time_ms) <= threshold_ms:
+            has_close_neighbor = True
+        if has_close_neighbor:
+            in_run.add(idx)
+
+    # Re-snap non-run notes to coarse grid
+    coarsened = 0
+    new_hits = []
+    for idx, hit in enumerate(hits_sorted):
+        if idx in in_run:
+            new_hits.append(hit)
+        else:
+            coarse_pos = round((hit.time_ms - phase_offset_ms) / coarse_grid_ms)
+            snapped = phase_offset_ms + coarse_pos * coarse_grid_ms
+            if abs(snapped - hit.time_ms) < coarse_grid_ms / 2:
+                if abs(snapped - hit.time_ms) > 0.5:  # actually moved
+                    coarsened += 1
+                new_hits.append(replace(hit, time_ms=snapped))
+            else:
+                new_hits.append(hit)
+
+    # Dedup
+    new_hits.sort(key=lambda h: (h.time_ms, h.lane, not h.is_cymbal))
+    deduped = []
+    for hit in new_hits:
+        if deduped and abs(hit.time_ms - deduped[-1].time_ms) < 1.0 \
+                and hit.lane == deduped[-1].lane:
+            continue
+        deduped.append(hit)
+
+    removed = len(new_hits) - len(deduped)
+    logger.info(f"  Coarsen non-runs: {coarsened} notes re-snapped to {coarse_subdivision}th grid"
+                f" ({len(in_run)} in-run preserved, {removed} dupes removed)")
 
     return replace(chart, hits=deduped)
 
@@ -684,8 +814,15 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
         subdiv = 4
     logger.info(f"  Quantization grid: {subdiv}th notes ({ms_per_beat / (subdiv / 4):.1f}ms at {tempo:.1f} BPM)")
 
-    chart = quantize_hits(chart, max_subdivision=subdiv)
-    chart = regularize_runs(chart, max_subdivision=subdiv)
+    # Compute grid phase offset once from raw hit times, reuse for all steps
+    fine_grid_ms = ms_per_beat / (subdiv / 4)
+    phase_offset = _compute_phase_offset([h.time_ms for h in chart.hits], fine_grid_ms)
+
+    chart = quantize_hits(chart, max_subdivision=subdiv, phase_offset_ms=phase_offset)
+    chart = regularize_runs(chart, max_subdivision=subdiv,
+                            phase_offset_ms=phase_offset)
+    chart = coarsen_non_runs(chart, fine_subdivision=subdiv, coarse_subdivision=32,
+                             phase_offset_ms=phase_offset)
     chart = resolve_playability(chart)
     chart = complete_cymbal_patterns(chart)
     chart = reinforce_backbeat(chart)
