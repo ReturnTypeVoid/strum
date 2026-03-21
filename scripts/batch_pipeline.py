@@ -258,7 +258,7 @@ class BatchPipeline:
                 metadata['genre'] = mb_metadata['genre']
         
         return {
-            'tempo_bpm': round(tempo),
+            'tempo_bpm': round(tempo, 2),  # Keep 0.01 BPM precision (rounding to int caused 500ms+ drift)
             'duration_ms': int(duration_sec * 1000),
             'duration_sec': duration_sec,
             'preview_start_ms': int(preview_sec * 1000),

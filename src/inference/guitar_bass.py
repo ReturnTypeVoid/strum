@@ -179,15 +179,22 @@ def _detect_onsets(
     # Height threshold: 0.07 gives ~4-5 nps for rock guitar
     peak_height = 0.07 if not is_bass else 0.10
     peaks, _ = find_peaks(oenv_norm, height=peak_height, distance=2)
+
+    # Backtrack peaks to the nearest preceding local minimum of onset
+    # strength — the spectral flux peak occurs ~50ms AFTER the actual
+    # transient attack, so we slide back to where the attack starts.
+    peaks = librosa.onset.onset_backtrack(peaks, oenv)
+
     peak_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
 
     # --- Beat-grid rhythm notes (8th note subdivisions) ---
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
-    if isinstance(tempo, np.ndarray):
-        tempo = float(tempo[0]) if len(tempo) > 0 else tempo_bpm
+    # Use beat_track only for beat POSITIONS (phase); use the pipeline's
+    # BPM (grid-aligned) for subdivision spacing.  beat_track's tempo
+    # estimate is often a subharmonic (half/3-quarter) of the real BPM.
+    _, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop_length)
 
-    beat_sec = 60.0 / tempo
+    beat_sec = 60.0 / tempo_bpm
     grid_times = []
     for bt in beat_times:
         grid_times.append(bt)

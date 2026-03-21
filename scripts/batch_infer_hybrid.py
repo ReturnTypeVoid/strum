@@ -277,30 +277,41 @@ def analyze_audio(audio_path: Path) -> dict:
         base_bpm /= 2
 
     # --- Grid-alignment BPM refinement ---
-    # Search ±5 BPM around the initial estimate at 0.1 resolution.
-    # For each candidate BPM, compute the optimal beat offset via
-    # circular statistics and measure how well detected beats align
-    # to the grid.  This is much more accurate than median IBI alone
-    # because it jointly optimizes BPM and phase.
+    # Two-pass search: first ±5 BPM at 0.1 resolution, then ±0.5 BPM
+    # at 0.01 resolution around the best candidate.  This gives much
+    # lower drift than 0.1 alone (0.01 BPM error ≈ 14ms drift in 4 min
+    # vs 140ms for 0.1 BPM error).
     bpm = round(base_bpm * 2) / 2  # fallback: nearest 0.5
     if len(beat_times) >= 8:
-        best_error = float("inf")
-        lo = max(400, int(base_bpm * 10) - 50)
-        hi = int(base_bpm * 10) + 51
-        for bpm_10x in range(lo, hi):
-            cand = bpm_10x / 10.0
-            per = 60.0 / cand
-            phases = (beat_times % per) / per * 2 * np.pi
-            mean_phase = np.arctan2(np.sin(phases).mean(), np.cos(phases).mean())
-            if mean_phase < 0:
-                mean_phase += 2 * np.pi
-            offset = mean_phase / (2 * np.pi) * per
-            residuals = (beat_times - offset) % per
-            errors = np.minimum(residuals, per - residuals)
-            me = float(np.mean(errors))
-            if me < best_error:
-                best_error = me
-                bpm = cand
+        def _grid_search(bt, lo_100x, hi_100x, scale):
+            """Search BPMs in [lo/scale, hi/scale] and return best."""
+            best_err = float("inf")
+            best_bpm = lo_100x / scale
+            for bpm_int in range(lo_100x, hi_100x):
+                cand = bpm_int / scale
+                per = 60.0 / cand
+                phases = (bt % per) / per * 2 * np.pi
+                mean_phase = np.arctan2(np.sin(phases).mean(), np.cos(phases).mean())
+                if mean_phase < 0:
+                    mean_phase += 2 * np.pi
+                offset = mean_phase / (2 * np.pi) * per
+                residuals = (bt - offset) % per
+                errors = np.minimum(residuals, per - residuals)
+                me = float(np.mean(errors))
+                if me < best_err:
+                    best_err = me
+                    best_bpm = cand
+            return best_bpm
+
+        # Pass 1: coarse (0.1 BPM), ±5 BPM
+        lo1 = max(400, int(base_bpm * 10) - 50)
+        hi1 = int(base_bpm * 10) + 51
+        coarse_bpm = _grid_search(beat_times, lo1, hi1, 10.0)
+
+        # Pass 2: fine (0.01 BPM), ±0.5 BPM around coarse result
+        lo2 = max(4000, int(coarse_bpm * 100) - 50)
+        hi2 = int(coarse_bpm * 100) + 51
+        bpm = _grid_search(beat_times, lo2, hi2, 100.0)
 
     # --- Tempo change detection ---
     # Use windowed median of IBIs.  Only flag a change if the local BPM
@@ -319,7 +330,7 @@ def analyze_audio(audio_path: Path) -> dict:
 
         # Walk through local BPMs and detect change points
         current_bpm = bpm  # start with global refined BPM
-        tempo_events.append(TempoEvent(tick=0, tempo_bpm=round(current_bpm, 1), time_ms=0.0))
+        tempo_events.append(TempoEvent(tick=0, tempo_bpm=round(current_bpm, 2), time_ms=0.0))
         CHANGE_THRESH = 3.0  # BPM
         MIN_PERSIST = 8  # consecutive windows
 
@@ -333,7 +344,7 @@ def analyze_audio(audio_path: Path) -> dict:
                     new_bpm_values.append(local_bpms[j])
                     j += 1
                 if len(new_bpm_values) >= MIN_PERSIST:
-                    new_bpm = round(float(np.median(new_bpm_values)), 1)
+                    new_bpm = round(float(np.median(new_bpm_values)), 2)
                     # Normalize to 60-200
                     while new_bpm < 60:
                         new_bpm *= 2
@@ -346,12 +357,12 @@ def analyze_audio(audio_path: Path) -> dict:
                     continue
             i += 1
     else:
-        tempo_events.append(TempoEvent(tick=0, tempo_bpm=round(bpm, 1), time_ms=0.0))
+        tempo_events.append(TempoEvent(tick=0, tempo_bpm=round(bpm, 2), time_ms=0.0))
 
-    logger.info(f"  Tempo: {bpm:.1f} BPM, {len(tempo_events)} tempo event(s)")
+    logger.info(f"  Tempo: {bpm:.2f} BPM, {len(tempo_events)} tempo event(s)")
 
     return {
-        "tempo_bpm": round(bpm, 1),
+        "tempo_bpm": round(bpm, 2),
         "tempo_events": tempo_events,
         "duration_ms": duration_sec * 1000,
         "duration_sec": duration_sec,
