@@ -541,13 +541,11 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
 
     chart = enforce_min_gap(chart, min_gap_ms=20.0)
 
-    # Tempo-adaptive quantization: use finer grid at fast tempos
-    # to preserve triplet fills and fast rolls
-    tempo = chart.tempo_events[0].tempo_bpm if chart.tempo_events else 120
-    if tempo >= 160:
-        subdiv = 48  # 48th notes — catches triplet 16ths at fast tempos
-    else:
-        subdiv = 32  # 32nd notes — fine enough for moderate tempos
+    # Always use 48th note grid — 32nd is too coarse for snare rolls
+    # at moderate tempos (e.g., 83.5 BPM: 32nd=89.8ms but rolls are ~81ms apart,
+    # causing 20-30% of roll notes to dedup). 48th (59.9ms) captures them;
+    # 64th adds nothing beyond 48th.
+    subdiv = 48
 
     chart = quantize_hits(chart, max_subdivision=subdiv)
     chart = resolve_playability(chart)
