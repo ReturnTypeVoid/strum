@@ -78,6 +78,133 @@ def quantize_hits(chart: DrumChart, max_subdivision: int = 16) -> DrumChart:
 
 
 # ══════════════════════════════════════════════════════════════
+# 1b. Run regularization (fix hop-size jitter after quantization)
+# ══════════════════════════════════════════════════════════════
+
+def regularize_runs(chart: DrumChart, max_subdivision: int = 16,
+                    min_run_length: int = 4) -> DrumChart:
+    """Fix uneven spacing in fast same-lane runs caused by detector jitter.
+
+    The V14 onset detector has HOP=512 (11.6ms frame) resolution. When the
+    true inter-onset interval falls between two frame durations (e.g. 89.8ms
+    is 7.74 frames), detections alternate between adjacent frame counts,
+    creating ±1 grid jitter after quantization: e.g. gaps of 2,3,3,4,3,2
+    grid units instead of all 3's.
+
+    This function detects runs of ≥min_run_length consecutive same-lane hits
+    where gaps deviate by at most ±1 grid unit from the dominant gap, and
+    re-spaces them evenly.
+
+    Args:
+        chart: Quantized drum chart.
+        max_subdivision: The subdivision used during quantization.
+        min_run_length: Minimum number of consecutive hits to regularize.
+
+    Returns:
+        New DrumChart with regularized run spacing.
+    """
+    if not chart.hits or not chart.tempo_events:
+        return chart
+
+    tempo_bpm = chart.tempo_events[0].tempo_bpm
+    ms_per_beat = 60_000.0 / tempo_bpm
+    grid_ms = ms_per_beat / (max_subdivision / 4)
+
+    # Group hits by lane key (lane, is_cymbal)
+    from collections import Counter
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+
+    # Build per-lane sorted lists with original indices
+    lane_hits: dict[tuple[int, bool], list[tuple[int, DrumHit]]] = defaultdict(list)
+    for idx, hit in enumerate(hits_sorted):
+        lane_hits[(hit.lane, hit.is_cymbal)].append((idx, hit))
+
+    # Collect all time adjustments: idx -> new_time_ms
+    adjustments: dict[int, float] = {}
+    total_regularized = 0
+
+    for lane_key, lane_list in lane_hits.items():
+        if len(lane_list) < min_run_length:
+            continue
+
+        # Find runs: consecutive hits on this lane where no other hit on the
+        # same lane interrupts. We define "consecutive" as gaps small enough
+        # to be part of a fast run (≤ 8 grid units, i.e. ≤ 2 beats).
+        max_run_gap_grids = 8
+
+        runs: list[list[tuple[int, DrumHit]]] = []
+        current_run: list[tuple[int, DrumHit]] = [lane_list[0]]
+
+        for i in range(1, len(lane_list)):
+            prev_t = lane_list[i - 1][1].time_ms
+            curr_t = lane_list[i][1].time_ms
+            gap_grids = round((curr_t - prev_t) / grid_ms)
+            if gap_grids <= max_run_gap_grids:
+                current_run.append(lane_list[i])
+            else:
+                if len(current_run) >= min_run_length:
+                    runs.append(current_run)
+                current_run = [lane_list[i]]
+        if len(current_run) >= min_run_length:
+            runs.append(current_run)
+
+        for run in runs:
+            # Compute gaps in grid units
+            times = [h.time_ms for _, h in run]
+            gaps = [round((times[i] - times[i - 1]) / grid_ms)
+                    for i in range(1, len(times))]
+            if not gaps:
+                continue
+
+            # Find dominant gap
+            gap_counts = Counter(gaps)
+            dominant_gap = gap_counts.most_common(1)[0][0]
+            if dominant_gap < 1:
+                continue
+
+            # Check all gaps are within ±1 of dominant
+            if not all(abs(g - dominant_gap) <= 1 for g in gaps):
+                continue
+
+            # Check that the jitter is actually present (not already regular)
+            if all(g == dominant_gap for g in gaps):
+                continue
+
+            # Re-space: keep first hit, space remaining at dominant_gap
+            first_time = times[0]
+            for j, (idx, hit) in enumerate(run):
+                new_time = first_time + j * dominant_gap * grid_ms
+                adjustments[idx] = new_time
+            total_regularized += len(run)
+
+    if not adjustments:
+        return chart
+
+    # Apply adjustments
+    new_hits = []
+    for idx, hit in enumerate(hits_sorted):
+        if idx in adjustments:
+            new_hits.append(replace(hit, time_ms=adjustments[idx]))
+        else:
+            new_hits.append(hit)
+
+    # Re-dedup after adjustment (same as quantize_hits)
+    new_hits.sort(key=lambda h: (h.time_ms, h.lane, not h.is_cymbal))
+    deduped = []
+    for hit in new_hits:
+        if deduped and abs(hit.time_ms - deduped[-1].time_ms) < 1.0 \
+                and hit.lane == deduped[-1].lane:
+            continue
+        deduped.append(hit)
+
+    removed = len(new_hits) - len(deduped)
+    logger.info(f"  Run regularization: {total_regularized} hits in runs re-spaced"
+                f" (dominant gap preserved, {removed} dupes removed)")
+
+    return replace(chart, hits=deduped)
+
+
+# ══════════════════════════════════════════════════════════════
 # 2. Minimum gap enforcement
 # ══════════════════════════════════════════════════════════════
 
@@ -558,6 +685,7 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
     logger.info(f"  Quantization grid: {subdiv}th notes ({ms_per_beat / (subdiv / 4):.1f}ms at {tempo:.1f} BPM)")
 
     chart = quantize_hits(chart, max_subdivision=subdiv)
+    chart = regularize_runs(chart, max_subdivision=subdiv)
     chart = resolve_playability(chart)
     chart = complete_cymbal_patterns(chart)
     chart = reinforce_backbeat(chart)
