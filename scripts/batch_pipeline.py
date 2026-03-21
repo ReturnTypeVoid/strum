@@ -373,35 +373,54 @@ class BatchPipeline:
         return metadata
 
     def separate_stems(self, audio_path: Path, work_dir: Path) -> Dict[str, Path]:
-        """Separate stems using Demucs."""
+        """Separate stems using Demucs Python API (avoids torchaudio save bug)."""
+        import soundfile as sf
+        from demucs.pretrained import get_model
+        from demucs.apply import apply_model
+        import torch
+
         logger.info("  Separating stems with Demucs...")
         
-        demucs_out = work_dir / "demucs_temp"
-        demucs_out.mkdir(parents=True, exist_ok=True)
+        stem_dir = work_dir / "stems"
+        stem_dir.mkdir(parents=True, exist_ok=True)
         
-        cmd = [
-            sys.executable, "-m", "demucs",
-            "-n", self.demucs_model,
-            "-o", str(demucs_out),
-            str(audio_path),
-        ]
+        # Check if stems already exist
+        expected_stems = ["drums", "bass", "other", "vocals"]
+        if all((stem_dir / f"{s}.wav").exists() for s in expected_stems):
+            logger.info("    Stems already exist, skipping separation")
+            stems = {s: stem_dir / f"{s}.wav" for s in expected_stems}
+            # Check for 6-stem model extras
+            for extra in ["guitar", "piano"]:
+                p = stem_dir / f"{extra}.wav"
+                if p.exists():
+                    stems[extra] = p
+            return stems
         
-        # Run Demucs without capturing output (avoids pipe buffer issues)
-        # Progress will print to console directly
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            raise RuntimeError(f"Demucs failed with return code {result.returncode}")
+        model = get_model(self.demucs_model)
+        model.eval()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
         
-        logger.info(f"    Demucs separation complete")
+        y, sr_orig = librosa.load(str(audio_path), sr=None, mono=False)
+        if y.ndim == 1:
+            y = np.stack([y, y])
         
-        stem_dir = demucs_out / self.demucs_model / audio_path.stem
+        target_sr = model.samplerate
+        if sr_orig != target_sr:
+            y = librosa.resample(y, orig_sr=sr_orig, target_sr=target_sr)
+        
+        waveform = torch.from_numpy(y).float()
+        ref = waveform.mean(0)
+        waveform_norm = (waveform - ref.mean()) / ref.std()
+        sources = apply_model(model, waveform_norm[None].to(device), device=device)[0]
+        sources = sources * ref.std() + ref.mean()
+        
         stems = {}
-        # htdemucs_6s outputs: drums, bass, vocals, guitar, piano, other
-        # htdemucs outputs: drums, bass, vocals, other
-        for stem in ["drums", "bass", "other", "vocals", "guitar", "piano"]:
-            stem_path = stem_dir / f"{stem}.wav"
-            if stem_path.exists():
-                stems[stem] = stem_path
+        for i, name in enumerate(model.sources):
+            stem = sources[i].cpu().numpy()
+            path = stem_dir / f"{name}.wav"
+            sf.write(str(path), stem.T, target_sr)
+            stems[name] = path
         
         logger.info(f"    Separated stems: {list(stems.keys())}")
         return stems
