@@ -97,7 +97,9 @@ def transcribe_guitar(
         return GuitarChart(tempo_bpm=tempo_bpm, instrument="bass" if is_bass else "guitar")
 
     # --- Stage 2: Quantize to beat grid (before all other processing) ---
-    onset_times = _quantize_to_grid(onset_times, tempo_bpm)
+    # Use 1/32 grid for tighter timing (1/16 at slow BPMs = 180ms interval,
+    # causing up to ±90ms quantization jitter).
+    onset_times = _quantize_to_grid(onset_times, tempo_bpm, grid='1/32')
     logger.info(f"After quantization: {len(onset_times)} onsets")
 
     if len(onset_times) == 0:
