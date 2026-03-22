@@ -459,7 +459,7 @@ class BatchPipeline:
             from batch_infer_hybrid import (
                 detect_onsets_v14, extract_onset_windows, classify_onsets_ensemble,
                 build_context_vectors, build_chart, postprocess_chart,
-                _compute_spectral_centroid_features, analyze_audio,
+                _compute_spectral_centroid_features, _compute_onset_rms, analyze_audio,
             )
             from src.preprocessing.parsers.midi_parser import DrumChart, TimeSignature
             import numpy as np
@@ -492,6 +492,9 @@ class BatchPipeline:
                 drums_stem, onset_times_ms
             )
             
+            # RMS energy gating (suppress Demucs bleed in non-drum sections)
+            onset_rms = _compute_onset_rms(drums_stem, onset_times_ms)
+            
             # Build + post-process chart
             audio_info = analyze_audio(drums_stem)
             chart = build_chart(
@@ -499,6 +502,7 @@ class BatchPipeline:
                 tempo_events=audio_info["tempo_events"],
                 spectral_centroids=spectral_centroids,
                 spectral_high_pcts=spectral_high_pcts,
+                onset_rms=onset_rms,
             )
             
             if chart.hits:

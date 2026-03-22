@@ -729,6 +729,34 @@ def compute_spectral_features(audio_path: Path, onset_times_ms: list[float]) -> 
     return {"low_ratio": low_ratios}
 
 
+def _compute_onset_rms(
+    audio_path: Path,
+    onset_times_ms: list[float],
+    window_ms: float = 500.0,
+) -> np.ndarray:
+    """Compute local RMS energy around each onset from the drums stem.
+
+    Uses a wide window (500ms) to capture the section-level energy rather
+    than just the onset transient. This reliably separates real drum
+    sections (RMS > 0.04) from Demucs bleed regions (RMS < 0.03).
+
+    Returns an array of shape (N,).
+    """
+    y, sr = librosa.load(str(audio_path), sr=OC_SR, mono=True)
+    n = len(onset_times_ms)
+    rms = np.zeros(n, dtype=np.float32)
+    half_win = int(window_ms / 1000 * sr / 2)
+
+    for i, t_ms in enumerate(onset_times_ms):
+        center = int(t_ms / 1000 * sr)
+        start = max(0, center - half_win)
+        end = min(len(y), center + half_win)
+        if end > start:
+            rms[i] = np.sqrt(np.mean(y[start:end] ** 2))
+
+    return rms
+
+
 def _compute_spectral_centroid_features(
     audio_path: Path,
     onset_times_ms: list[float],
@@ -893,6 +921,7 @@ def build_chart(
     thresholds: list[float] | None = None,
     spectral_centroids: np.ndarray | None = None,
     spectral_high_pcts: np.ndarray | None = None,
+    onset_rms: np.ndarray | None = None,
 ) -> DrumChart:
     """Convert classification results into a DrumChart.
 
@@ -919,8 +948,30 @@ def build_chart(
     HAND_CLASSES = {1, 2, 3, 4, 5, 6, 7}
     has_spectral = (spectral_centroids is not None and spectral_high_pcts is not None)
 
+    # RMS energy gate: compute adaptive threshold from the onset RMS
+    # distribution.  Onsets with RMS far below the typical level are
+    # Demucs bleed (guitar/vocal leaking into the drums stem) rather
+    # than real drum hits.  Use 15% of the 75th percentile — this
+    # cleanly separates bleed (RMS < 0.03) from real drums (RMS > 0.04).
+    rms_gated = 0
+    if onset_rms is not None:
+        valid_rms = onset_rms[valid_mask.astype(bool)]
+        positive_rms = valid_rms[valid_rms > 0]
+        if len(positive_rms) > 0:
+            rms_p75 = np.percentile(positive_rms, 75)
+            rms_threshold = rms_p75 * 0.15
+        else:
+            rms_threshold = 0.0
+    else:
+        rms_threshold = 0.0
+
     for i, t_ms in enumerate(onset_times_ms):
         if not valid_mask[i]:
+            continue
+
+        # RMS energy gate: skip onsets in low-energy regions (Demucs bleed)
+        if onset_rms is not None and onset_rms[i] < rms_threshold:
+            rms_gated += 1
             continue
 
         # Collect which classes fire (above threshold)
@@ -1148,6 +1199,8 @@ def build_chart(
     logger.info(f"  {len(hits)} hits after thresholding:")
     for cls in range(8):
         logger.info(f"    {CLASS_NAMES[cls]}: {class_counts[cls]}")
+    if rms_gated > 0:
+        logger.info(f"  RMS energy gate: {rms_gated} onsets suppressed (Demucs bleed, threshold={rms_threshold:.4f})")
     if lane_conflicts_resolved > 0:
         logger.info(f"  Lane conflicts resolved (tom won): {lane_conflicts_resolved}")
     if hand_caps_applied > 0:
@@ -1321,6 +1374,9 @@ def process_song(
         )
         logger.info(f"  Spectral features computed ({time.time() - t0:.1f}s)")
 
+        # 5c. Compute per-onset RMS for energy gating (suppress Demucs bleed)
+        onset_rms = _compute_onset_rms(drums_path, onset_times_ms)
+
         # 6. Build chart
         chart = build_chart(
             onset_times_ms, probs, windows["valid_mask"],
@@ -1328,6 +1384,7 @@ def process_song(
             thresholds=class_thresholds,
             spectral_centroids=spectral_centroids,
             spectral_high_pcts=spectral_high_pcts,
+            onset_rms=onset_rms,
         )
 
     # 6b. Post-processing
