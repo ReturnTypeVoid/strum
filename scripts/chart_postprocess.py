@@ -779,6 +779,83 @@ def resolve_playability(chart: DrumChart) -> DrumChart:
 
 
 # ══════════════════════════════════════════════════════════════
+# 3b. Roll consistency — unify tom/cymbal within rapid cross-lane rolls
+# ══════════════════════════════════════════════════════════════
+
+def enforce_roll_consistency(
+    chart: DrumChart,
+    max_gap_ms: float = 150.0,
+    min_roll_length: int = 3,
+) -> DrumChart:
+    """Unify tom/cymbal classification within rapid cross-lane rolls.
+
+    During a fast roll across shared lanes (Yellow/Blue/Green), the
+    ensemble classifier sometimes flips individual hits between tom and
+    cymbal. A real fill/roll is always one or the other — never a mix.
+    This function detects rapid sequences on shared lanes and makes every
+    hit in the roll match the majority classification.
+
+    Args:
+        chart: Input drum chart (should be quantized already).
+        max_gap_ms: Maximum gap between consecutive hits to be part of
+            the same roll.
+        min_roll_length: Minimum number of hits for a sequence to be
+            treated as a roll.
+    """
+    if not chart.hits:
+        return chart
+
+    SHARED_LANES = {2, 3, 4}  # Yellow, Blue, Green
+
+    hits = list(chart.hits)
+    hits.sort(key=lambda h: h.time_ms)
+
+    # Extract shared-lane hits in time order
+    shared = [(i, h) for i, h in enumerate(hits) if h.lane in SHARED_LANES]
+    if len(shared) < min_roll_length:
+        return chart
+
+    # Segment into rolls: consecutive shared-lane hits within max_gap_ms
+    rolls: list[list[int]] = []  # each roll is a list of indices into `hits`
+    current: list[int] = [shared[0][0]]
+
+    for k in range(1, len(shared)):
+        prev_time = hits[shared[k - 1][0]].time_ms
+        curr_time = hits[shared[k][0]].time_ms
+        if curr_time - prev_time <= max_gap_ms:
+            current.append(shared[k][0])
+        else:
+            if len(current) >= min_roll_length:
+                rolls.append(current)
+            current = [shared[k][0]]
+    if len(current) >= min_roll_length:
+        rolls.append(current)
+
+    # For each roll, count toms vs cymbals and unify to majority
+    total_flipped = 0
+    for roll_indices in rolls:
+        toms = sum(1 for i in roll_indices if not hits[i].is_cymbal)
+        cyms = len(roll_indices) - toms
+        if toms == 0 or cyms == 0:
+            continue  # already consistent
+
+        # Majority wins
+        target_cymbal = cyms > toms
+        flipped = 0
+        for i in roll_indices:
+            if hits[i].is_cymbal != target_cymbal:
+                hits[i] = replace(hits[i], is_cymbal=target_cymbal)
+                flipped += 1
+        total_flipped += flipped
+
+    if total_flipped > 0:
+        logger.info(f"  Roll consistency: {total_flipped} hits unified "
+                    f"across {len(rolls)} rolls")
+
+    return replace(chart, hits=hits)
+
+
+# ══════════════════════════════════════════════════════════════
 
 def postprocess_chart(chart: DrumChart) -> DrumChart:
     """Apply all post-processing steps in order.
@@ -825,6 +902,7 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
     chart = coarsen_non_runs(chart, fine_subdivision=subdiv, coarse_subdivision=32,
                              phase_offset_ms=phase_offset)
     chart = resolve_playability(chart)
+    chart = enforce_roll_consistency(chart)
     chart = complete_cymbal_patterns(chart)
     chart = reinforce_backbeat(chart)
     chart = remove_isolated_hits(chart)
