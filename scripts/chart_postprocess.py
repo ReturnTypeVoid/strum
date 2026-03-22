@@ -465,10 +465,11 @@ def complete_cymbal_patterns(
                     fill_time = times[i] + j * pattern_interval
                     fill_key = (round(fill_time, 1), lane, is_cymbal)
 
-                    # Don't add if there's already a hit nearby
+                    # Don't add if there's already a hit nearby on the same lane
+                    # (check ANY is_cymbal value — same lane = same MIDI base note)
                     already_exists = False
                     for existing_time, existing_lane, existing_cym in all_hits_set:
-                        if existing_lane == lane and existing_cym == is_cymbal \
+                        if existing_lane == lane \
                                 and abs(existing_time - fill_time) < pattern_interval * 0.3:
                             already_exists = True
                             break

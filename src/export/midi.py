@@ -246,7 +246,7 @@ def _compute_hit_ticks(
         ms_per_tick = ms_per_beat / ticks_per_beat
         
         delta_ms = hit.time_ms - segment_start_ms
-        delta_ticks = int(delta_ms / ms_per_tick)
+        delta_ticks = round(delta_ms / ms_per_tick)
         tick = segment_start_tick + delta_ticks
         
         hits_with_ticks.append(DrumHit(
@@ -463,6 +463,18 @@ def export_all_difficulties(
             "velocity": 0,
         })
     
+    # Deduplicate base note events: same (tick, note, type) should only
+    # appear once.  This can happen when a tom and cymbal hit share the
+    # same lane/tick (same base note but different is_cymbal flag).
+    seen_events: set[tuple[int, int, str]] = set()
+    deduped_events = []
+    for event in events:
+        key = (event["tick"], event["note"], event["type"])
+        if key not in seen_events:
+            seen_events.add(key)
+            deduped_events.append(event)
+    events = deduped_events
+
     # Sort events by tick
     events.sort(key=lambda e: (e["tick"], e["type"] == "note_off"))
     

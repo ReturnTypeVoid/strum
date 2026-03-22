@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import bisect
 import json
 import logging
 import re
@@ -1042,8 +1043,34 @@ def build_chart(
         for i, t_ms in enumerate(onset_times_ms):
             centroid_by_time[t_ms] = spectral_centroids[i]
 
+    # Build time→tom lookup for fill detection: if a hit is near other
+    # tom hits on DIFFERENT shared lanes, it's likely a fill/roll and
+    # should be protected from streak smoothing.
+    SHARED_LANES = {2, 3, 4}
+    tom_times_by_lane: dict[int, list[float]] = {ln: [] for ln in SHARED_LANES}
+    for h in hits:
+        if h.lane in SHARED_LANES and not h.is_cymbal:
+            tom_times_by_lane[h.lane].append(h.time_ms)
+    for ln in SHARED_LANES:
+        tom_times_by_lane[ln].sort()
+
+    def _in_fill_context(time_ms: float, lane: int, window_ms: float = 200.0) -> bool:
+        """True if there are tom hits on OTHER shared lanes within ±window_ms."""
+        other_tom_lanes = 0
+        for other_lane in SHARED_LANES:
+            if other_lane == lane:
+                continue
+            times = tom_times_by_lane[other_lane]
+            # Binary search for nearby toms
+            lo = bisect.bisect_left(times, time_ms - window_ms)
+            hi = bisect.bisect_right(times, time_ms + window_ms)
+            if hi > lo:
+                other_tom_lanes += 1
+        return other_tom_lanes >= 1
+
     green_smoothed = 0  # total across all lanes
     spectral_streak_protected = 0
+    fill_context_protected = 0
     for smooth_lane, (cym_cls, tom_cls) in LANE_CLASS_MAP.items():
         lane_indices = [idx for idx, h in enumerate(hits) if h.lane == smooth_lane]
         if len(lane_indices) < 3:
@@ -1081,11 +1108,18 @@ def build_chart(
                     idx = lane_indices[j]
                     if hits[idx].is_cymbal != target_cymbal:
                         # Spectral protection: block tom→cymbal flip when
-                        # centroid indicates tom-like audio (< 3000 Hz).
+                        # centroid indicates tom-like audio (< 3500 Hz).
                         if target_cymbal and not hits[idx].is_cymbal:
                             centroid = centroid_by_time.get(hits[idx].time_ms, 5000.0)
-                            if centroid < 3000:
+                            if centroid < 3500:
                                 spectral_streak_protected += 1
+                                continue
+                        # Fill context protection: block tom→cymbal flip
+                        # when nearby tom hits exist on other shared lanes
+                        # (indicates a fill/roll pattern).
+                        if target_cymbal and not hits[idx].is_cymbal:
+                            if _in_fill_context(hits[idx].time_ms, smooth_lane):
+                                fill_context_protected += 1
                                 continue
                         hits[idx].is_cymbal = target_cymbal
                         if target_cymbal:
@@ -1128,6 +1162,8 @@ def build_chart(
         logger.info(f"  Streak smoothing: {green_smoothed} flips fixed (bidirectional)")
     if spectral_streak_protected > 0:
         logger.info(f"  Streak smoothing: {spectral_streak_protected} tom→cymbal flips blocked (spectral protection)")
+    if fill_context_protected > 0:
+        logger.info(f"  Streak smoothing: {fill_context_protected} tom→cymbal flips blocked (fill context)")
 
     # Compute tick positions for tempo change events.
     ticks_per_beat = 480
@@ -1137,7 +1173,7 @@ def build_chart(
         delta_ms = curr.time_ms - prev.time_ms
         ms_per_beat = 60_000.0 / prev.tempo_bpm
         ms_per_tick = ms_per_beat / ticks_per_beat
-        delta_ticks = int(delta_ms / ms_per_tick)
+        delta_ticks = round(delta_ms / ms_per_tick)
         tempo_events[idx] = TempoEvent(
             tick=prev.tick + delta_ticks,
             tempo_bpm=curr.tempo_bpm,
