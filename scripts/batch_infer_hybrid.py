@@ -1029,9 +1029,21 @@ def build_chart(
     # match its surroundings.  Bidirectional: fixes both stray toms in
     # cymbal sections AND stray cymbals in tom sections.
     # Runs iteratively until no more changes (cascading short streaks).
+    #
+    # Spectral protection: tom→cymbal flips are blocked when the spectral
+    # centroid is < 3000 Hz (audio is tom-like). This preserves real tom
+    # hits in fills/rolls that briefly visit a lane dominated by cymbals.
     # Class count adjustments: lane → (cymbal_class, tom_class)
     LANE_CLASS_MAP = {2: (2, 3), 3: (4, 5), 4: (6, 7)}  # yellow, blue, green
+
+    # Build time → spectral centroid lookup for streak protection
+    centroid_by_time: dict[float, float] = {}
+    if has_spectral:
+        for i, t_ms in enumerate(onset_times_ms):
+            centroid_by_time[t_ms] = spectral_centroids[i]
+
     green_smoothed = 0  # total across all lanes
+    spectral_streak_protected = 0
     for smooth_lane, (cym_cls, tom_cls) in LANE_CLASS_MAP.items():
         lane_indices = [idx for idx, h in enumerate(hits) if h.lane == smooth_lane]
         if len(lane_indices) < 3:
@@ -1068,6 +1080,13 @@ def build_chart(
                 for j in range(j_start, j_end + 1):
                     idx = lane_indices[j]
                     if hits[idx].is_cymbal != target_cymbal:
+                        # Spectral protection: block tom→cymbal flip when
+                        # centroid indicates tom-like audio (< 3000 Hz).
+                        if target_cymbal and not hits[idx].is_cymbal:
+                            centroid = centroid_by_time.get(hits[idx].time_ms, 5000.0)
+                            if centroid < 3000:
+                                spectral_streak_protected += 1
+                                continue
                         hits[idx].is_cymbal = target_cymbal
                         if target_cymbal:
                             class_counts[cym_cls] += 1; class_counts[tom_cls] -= 1
@@ -1107,6 +1126,8 @@ def build_chart(
         logger.info(f"  Spectral-biased lane conflicts: {spectral_conflict_bias}")
     if green_smoothed > 0:
         logger.info(f"  Streak smoothing: {green_smoothed} flips fixed (bidirectional)")
+    if spectral_streak_protected > 0:
+        logger.info(f"  Streak smoothing: {spectral_streak_protected} tom→cymbal flips blocked (spectral protection)")
 
     # Compute tick positions for tempo change events.
     ticks_per_beat = 480
