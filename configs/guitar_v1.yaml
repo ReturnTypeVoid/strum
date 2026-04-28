@@ -1,0 +1,107 @@
+# Guitar V1 — Two-Stage Neural Pipeline
+#
+# Stage 1: GuitarOnsetCRNN — frame-level binary onset detection
+# Stage 2: GuitarFretClassifier — per-onset 5-bit multi-label fret head
+#
+# Replaces the rule-based librosa pipeline (src/inference/guitar_bass.py)
+# for the *guitar* path. Bass keeps the rule-based pipeline until we
+# train a guitar checkpoint and validate the architecture.
+#
+# Training data: configs/guitar_v1_manifest.json (1500 songs, 1.27M onsets)
+# Cache:        /mnt/ml-data/guitar_v1_cache/{onset,fret}/{split}_*.npy
+
+paths:
+  manifest:       "configs/guitar_v1_manifest.json"
+  cache_dir:      "/mnt/ml-data/guitar_v1_cache"
+  checkpoint_dir: "checkpoints/guitar_v1"
+  output_dir:     "outputs/guitar_v1"
+
+# ─── Audio / mel constants (must match preprocess_guitar_windows.py) ────────
+audio:
+  sample_rate: 22050
+  n_mels:      128
+  n_fft:       2048
+  hop_length:  512
+  fmin:        30.0
+  fmax:        8000.0
+
+# ─── Stage 1: Onset CRNN ────────────────────────────────────────────────────
+onset:
+  model:
+    n_mels:        128
+    in_channels:   1
+    cnn_channels:  [32, 64, 128, 256]
+    rnn_hidden:    256
+    rnn_layers:    2
+    rnn_dropout:   0.2
+    head_hidden:   128
+    head_dropout:  0.2
+
+  data:
+    seg_frames:        216           # 5.0 s @ 23.22 ms/frame
+    onset_smear_frames: 1            # match preprocessing
+    pos_weight:        20.0          # ~5% of frames are positive
+    pos_focal_alpha:   0.25          # focal loss
+    pos_focal_gamma:   2.0
+
+  train:
+    batch_size:      32
+    accumulation_steps: 1
+    epochs:          25
+    learning_rate:   0.001
+    min_lr:          0.00001
+    weight_decay:    0.0001
+    warmup_epochs:   1
+    gradient_clip:   1.0
+    spec_augment_freq: 16            # mask up to 16 mel bins
+    spec_augment_time: 32            # mask up to 32 frames
+    num_workers:     6
+    pin_memory:      true
+    early_stop_patience: 5
+
+  inference:
+    peak_threshold:    0.4
+    peak_min_distance_frames: 3      # ~70 ms minimum gap between onsets
+    smoothing_kernel:  3             # median filter radius (frames)
+
+# ─── Stage 2: Fret Classifier ───────────────────────────────────────────────
+fret:
+  model:
+    n_mels:       128
+    n_frames:     22
+    in_channels:  1
+    cnn_channels: [32, 64, 128, 256]
+    head_hidden:  256
+    dropout:      0.3
+    n_frets:      5
+    aux_chord_head: true
+
+  data:
+    # Class-balance reweighting based on manifest fret distribution
+    # [262k, 340k, 368k, 303k, 183k] → inverse-frequency weights
+    fret_pos_weights: [1.41, 1.08, 1.00, 1.21, 2.01]
+    chord_pos_weight: 1.7            # ~37% chord rate
+
+  train:
+    batch_size:      256
+    accumulation_steps: 1
+    epochs:          30
+    learning_rate:   0.001
+    min_lr:          0.00001
+    weight_decay:    0.0001
+    warmup_epochs:   1
+    gradient_clip:   1.0
+    aux_chord_loss_weight: 0.3
+    spec_augment_freq: 12
+    spec_augment_time: 6
+    num_workers:     6
+    pin_memory:      true
+    early_stop_patience: 6
+
+# ─── W&B (optional) ─────────────────────────────────────────────────────────
+wandb:
+  enabled:  false                    # CLI: --wandb to enable
+  project:  "strum-guitar"
+  entity:   null
+  run_name: "guitar_v1"
+  tags:     ["guitar", "v1", "two-stage"]
