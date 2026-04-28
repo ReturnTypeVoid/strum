@@ -245,8 +245,10 @@ def main() -> int:
             "/mnt/ml-data/training_songs/RockBand4",
             "/mnt/ml-data/training_songs/Custom",
             "/mnt/ml-data/training_songs/FortniteFestival",
+            "/mnt/ml-data/training_songs/Rock Band",
+            "/mnt/ml-data/training_songs/Guitar Hero",
         ],
-        help="Root directories to scan for song folders",
+        help="Root directories to scan for song folders (recursively)",
     )
     ap.add_argument(
         "--output",
@@ -262,14 +264,19 @@ def main() -> int:
     args = ap.parse_args()
 
     candidate_dirs: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
     for root in args.roots:
         rp = Path(root)
         if not rp.is_dir():
             log.warning("root does not exist: %s", rp)
             continue
-        for sub in rp.iterdir():
-            if sub.is_dir():
-                candidate_dirs.append((rp.name, sub))
+        # Recursively find every directory that contains a notes.mid
+        for mid in rp.rglob("notes.mid"):
+            sd = mid.parent
+            if sd in seen:
+                continue
+            seen.add(sd)
+            candidate_dirs.append((rp.name, sd))
 
     log.info("scanning %d candidate song dirs across %d roots",
              len(candidate_dirs), len(args.roots))
