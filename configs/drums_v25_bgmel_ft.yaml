@@ -1,0 +1,112 @@
+# V25 Background-Subtracted Mel Fine-Tune
+#
+# Goal: Adapt V14's TwoStageDrumsCRNN to BG-subtracted log-mel input.
+# Inference at scripts/batch_infer_hybrid.py:_compute_log_mel_with_optional_bg_subtract
+# subtracts a per-mel-bin rolling-percentile background floor before log,
+# which removes contamination from auxiliary percussion (background
+# tambourine, shaker, faint secondary hihat) that biases V14 toward cymbal
+# classifications.
+#
+# Per-onset diagnostic on 17 stubborn Alkaline-intro Tom→Cym errors showed
+# BG subtraction can flip ~4 strongly cymbal-confident outputs back to tom
+# at the input-distribution shift cost. Fine-tuning aligns the network with
+# the new input distribution so we get the wins without the across-the-board
+# bias shift that caused Cym→Tom regression in the inference-only test.
+#
+# Strategy: discriminative-LR fine-tune (same as v2 finetune):
+#   - CNN encoder + subband pool: FROZEN (low-level features still apply —
+#     BG subtraction preserves spectral structure, just removes a stationary
+#     floor)
+#   - BiLSTM: FROZEN
+#   - Self-attention + attn_norm: trainable, lr × 0.1
+#   - Feature projection: trainable, lr × 0.3
+#   - Classifier head: trainable, lr × 1.0
+#   - Onset detector: FROZEN
+#
+# Training inputs come from DrumsV14FullSongDataset which honors
+# STRUM_MEL_BG_SUBTRACT / STRUM_MEL_BG_ALPHA / STRUM_MEL_BG_PCTL /
+# STRUM_MEL_BG_WINDOW_SEC env vars exactly matching inference.
+
+paths:
+  data_dir: "/mnt/ml-data/dataset_drums"
+  output_dir: "outputs/drums_v25_bgmel_ft"
+  checkpoint_dir: "checkpoints/drums_v25_bgmel_ft"
+
+# Must match V14 architecture exactly for warm_start
+model:
+  type: "two_stage_crnn"
+  sample_rate: 44100
+  n_mels: 128
+  hop_length: 512
+  n_fft: 2048
+  conv_channels: [64, 128, 256, 512]
+  freq_subbands: [32, 64, 96, 128]
+  subband_proj_dim: 256
+  lstm_hidden: 640
+  lstm_layers: 3
+  attention_heads: 10
+  attention_type: "flash"
+  attention_window: 512
+  dropout: 0.3
+  onset_detector_hidden: 320
+  classifier_hidden: 640
+  num_classes: 8
+  predict_velocity: true
+
+training:
+  batch_size: 1
+  accumulation_steps: 8
+  epochs: 12
+  learning_rate: 0.00005        # 5e-5 — same as v2 finetune (conservative)
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  warmup_epochs: 2
+  checkpoint_every: 3
+  early_stop_patience: 6
+  f1_eval_interval: 1
+  max_train_batches: 500
+  max_val_batches: 200
+  num_workers: 4
+  pin_memory: false
+  gradient_clip: 1.0
+  max_song_duration_sec: 360
+
+  warm_start: "checkpoints/drums_v14/best.pt"
+
+  lr_multipliers:
+    attention: 0.1
+    feature_proj: 0.3
+    classifier: 1.0
+
+loss:
+  onset_pos_weight: 20.0
+  onset_focal_gamma: 2.0
+  # Same class weights as v2 — proven configuration.
+  classify_class_weight: [1.0, 1.2, 1.1, 50.0, 5.0, 45.0, 12.0, 25.0]
+  classify_focal_gamma: 1.0
+  classify_label_smoothing: 0.05
+  onset_loss_weight: 0.0       # Frozen
+  classify_loss_weight: 1.0
+  velocity_loss_weight: 0.0
+
+augmentation:
+  enabled: true
+  freq_mask_param: 27
+  time_mask_param: 50
+
+inference:
+  onset_threshold: 0.5
+  class_thresholds:
+    Kick: 0.50
+    Snare: 0.55
+    HiHat: 0.50
+    HighTom: 0.80
+    Ride: 0.55
+    LowTom: 0.70
+    Crash: 0.60
+    FloorTom: 0.75
+
+split:
+  train_ratio: 0.85
+  test_ratio: 0.15
+  seed: 42

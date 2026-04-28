@@ -1,0 +1,89 @@
+# Cymbal Specialist — V1
+#
+# Purpose: A 3-way HiHat / Ride / Crash classifier targeting the dominant
+# error mode revealed by the clean-stem ceiling diagnostic
+# (outputs/clean_ceiling_confusion.json):
+#
+#   - HiHat / Ride / Crash misses + cymbal↔cymbal confusion together account
+#     for ~13 pts of the 19 pts of error on clean stems.
+#   - Existing 8-way ensemble has to balance all 8 classes; a specialist
+#     trained only on cymbal-positive onsets can spend all its capacity on
+#     the high-frequency shimmer/centroid features that distinguish the three.
+#
+# Training data: cymbal-positive subset of the existing pre-extracted onset
+# windows (outputs/onset_classifier/cache_community/cache). An onset is
+# considered cymbal-positive if labels[2|4|6] == 1 in the cached multi-hot
+# label vector. Multi-cymbal onsets (e.g. crash+hat together) are kept as
+# multi-hot 3-way labels.
+#
+# Architecture: same OnsetClassifier skeleton as V17, but with num_classes=3
+# and context_classes=8 so it still consumes the cached 64-D context vector.
+#
+# Loss: ASL with class weights inverse to frequency
+#   (HiHat 1.0 / Ride 2.5 / Crash 7.0).
+#
+# Integration plan (after training, separate change in batch_infer_hybrid.py):
+#   For every onset where the 8-way ensemble's argmax-after-thresholds is in
+#   {HiHat, Ride, Crash} OR sigmoid(cymbal_logit_sum) > 0.5, run the
+#   specialist's 3-way softmax. If max(specialist) > 0.55 and disagrees with
+#   the ensemble's cymbal pick, override the cymbal class.
+
+paths:
+  cache_dir: "outputs/onset_classifier/cache_community/cache"
+  output_dir: "outputs/cymbal_specialist"
+  checkpoint_dir: "checkpoints/cymbal_specialist"
+
+dataset:
+  sample_rate: 44100
+  n_mels: 128
+  fine_frames: 87
+  coarse_frames: 44
+  lowfreq_frames: 44
+  context_dim: 64           # 2*4*8 — original 8-class context
+  cymbal_indices: [2, 4, 6] # HiHat, Ride, Crash in original 8-class space
+  # Cap per epoch (random subsample of cymbal-positive onsets) — None = use all
+  max_train_onsets: 600000
+  # Test set is small enough to evaluate fully
+
+model:
+  num_classes: 3            # HiHat, Ride, Crash
+  context_classes: 8        # context vector still 8-way
+  branch_channels: [1, 32, 64, 128, 256]
+  context_size: 4
+  context_hidden: 64
+  spectral_dim: 48
+  classifier_hidden: 384
+  dropout: 0.3
+  use_freq_attn: false
+  use_hpss: true
+  enhanced_spectral: true
+  use_lowfreq_branch: true
+  use_lowfreq_spectral: true
+
+training:
+  batch_size: 256
+  epochs: 40
+  learning_rate: 0.0003
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  num_workers: 4
+  eval_interval: 1
+  early_stop_patience: 8
+  warmup_epochs: 2
+
+loss:
+  # Inverse-frequency-ish weighting based on training counts
+  # (HiHat 498k / Ride 190k / Crash 67k → roughly 7.5 : 2.6 : 1)
+  class_weights: [1.0, 2.5, 7.0]
+  use_asl: true
+  asl_gamma_neg: 4.0
+  asl_gamma_pos: 0.0
+  asl_clip: 0.05
+
+augmentation:
+  noise_std: 0.005
+  gain_db_range: [-3.0, 3.0]
+  spec_augment: true
+  freq_mask_width: 12
+  time_mask_width: 8

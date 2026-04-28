@@ -1,0 +1,83 @@
+# Cymbal Specialist — V2 (with NotCymbal abstention class)
+#
+# What changed vs V1:
+#   V1 was 3-way (HiHat / Ride / Crash) trained ONLY on cymbal-positive
+#   onsets. Dry-run integration showed -2.6pts on the clean-stem baseline:
+#   71% of override candidates had no GT cymbal at all (the V14 onset
+#   detector had false-positively labeled a tom/snare as a cymbal). With no
+#   abstention class, the 3-way specialist confidently picked one of three
+#   wrong cymbals → wrong-lane errors went up.
+#
+#   V2 adds a 4th class: NotCymbal. Training mixes in non-cymbal onsets
+#   from the same cache, labeled as [0,0,0,1]. The integration rule becomes:
+#     - softmax over all 4 outputs
+#     - if argmax == NotCymbal (or its prob > thresh), DO NOT override
+#     - if argmax in {HiHat, Ride, Crash} and prob > conf_thresh and
+#       differs from the ensemble's class, override
+#
+#   Class weights softened (V1 was [1.0, 2.5, 7.0] — Crash 7x weight caused
+#   Crash bias visible as Ride→Crash dominating overrides).
+
+paths:
+  cache_dir: "outputs/onset_classifier/cache_community/cache"
+  output_dir: "outputs/cymbal_specialist_v2"
+  checkpoint_dir: "checkpoints/cymbal_specialist_v2"
+
+dataset:
+  sample_rate: 44100
+  n_mels: 128
+  fine_frames: 87
+  coarse_frames: 44
+  lowfreq_frames: 44
+  context_dim: 64
+  cymbal_indices: [2, 4, 6]  # HiHat, Ride, Crash in original 8-class space
+  num_classes_internal: 4    # HiHat, Ride, Crash, NotCymbal
+  # Sample mix
+  max_train_pos_onsets: 600000
+  max_train_neg_onsets: 400000   # ~40% negatives in training
+  # Test set: keep all positives, subsample negatives proportionally
+  max_test_neg_onsets: 200000
+
+model:
+  num_classes: 4              # HiHat, Ride, Crash, NotCymbal
+  context_classes: 8
+  branch_channels: [1, 32, 64, 128, 256]
+  context_size: 4
+  context_hidden: 64
+  spectral_dim: 48
+  classifier_hidden: 384
+  dropout: 0.3
+  use_freq_attn: false
+  use_hpss: true
+  enhanced_spectral: true
+  use_lowfreq_branch: true
+  use_lowfreq_spectral: true
+
+training:
+  batch_size: 256
+  epochs: 30
+  learning_rate: 0.0003
+  min_lr: 0.000005
+  weight_decay: 0.0001
+  gradient_clip: 1.0
+  num_workers: 4
+  eval_interval: 1
+  early_stop_patience: 6
+  warmup_epochs: 2
+
+loss:
+  # Softer weights than V1. Negatives (NotCymbal) get a moderate weight so
+  # the model actually learns the abstention. Crash kept slightly higher
+  # than Ride but nothing like V1's 7x.
+  class_weights: [1.0, 1.8, 3.0, 1.5]   # HiHat, Ride, Crash, NotCymbal
+  use_asl: true
+  asl_gamma_neg: 4.0
+  asl_gamma_pos: 0.0
+  asl_clip: 0.05
+
+augmentation:
+  noise_std: 0.005
+  gain_db_range: [-3.0, 3.0]
+  spec_augment: true
+  freq_mask_width: 12
+  time_mask_width: 8
