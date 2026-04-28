@@ -81,7 +81,7 @@ class BatchPipeline:
         include_guitar: bool = True,
         include_bass: bool = True,
         include_vocals: bool = True,
-        include_keys: bool = True,
+        include_keys: bool = False,
         include_video: bool = False,
         device: str = None,
         use_v11: bool = True,  # Use V11 with tom/cymbal correction
@@ -104,23 +104,33 @@ class BatchPipeline:
         self._drums_models = None
         self._vocals_charter = None
         self._keys_charter = None
+        self.tomcym = None
     
     @property
     def drums_models(self):
-        """Lazy load drums V14 onset detector + ensemble."""
+        """Lazy load drums V14 onset detector + ensemble + phase3 + tom_refinement."""
         if self._drums_models is None and self.include_drums:
             try:
-                from batch_infer_hybrid import load_v14_onset_detector, load_ensemble
+                from batch_infer_hybrid import (
+                    load_v14_onset_detector, load_ensemble, load_tomcym_classifier,
+                    load_phase3_model, load_tom_refinement,
+                )
                 import torch
                 device = torch.device(self.device) if self.device else (
                     torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
                 )
-                logger.info("Loading drums V14 onset detector + ensemble...")
+                logger.info("Loading drums V14 onset detector + ensemble + phase3 + tom_refinement...")
                 v14_model = load_v14_onset_detector(device)
                 ensemble = load_ensemble(device)
+                tomcym = load_tomcym_classifier(device)
+                phase3_model = load_phase3_model(device)
+                tom_refinement = load_tom_refinement(device)
+                self.tomcym = tomcym
                 self._drums_models = {
                     "v14": v14_model,
                     "ensemble": ensemble,
+                    "phase3": phase3_model,
+                    "tom_refinement": tom_refinement,
                     "device": device,
                 }
             except Exception as e:
@@ -143,7 +153,10 @@ class BatchPipeline:
         if self._keys_charter is None and self.include_keys:
             from keys_charter import KeysCharter
             logger.info("Loading keys charter...")
-            self._keys_charter = KeysCharter(detection_threshold=0.3)
+            # Tightened threshold: 0.3 -> 0.7. Default 0.3 fires on any tonal
+            # content in the 'other' stem (guitar+vocals bleed), producing ~4x
+            # GT keys note count across our held-out set.
+            self._keys_charter = KeysCharter(detection_threshold=0.7)
         return self._keys_charter
     
     def _quick_musicbrainz_check(self, artist: str, title: str) -> bool:
@@ -391,130 +404,212 @@ class BatchPipeline:
         return metadata
 
     def separate_stems(self, audio_path: Path, work_dir: Path) -> Dict[str, Path]:
-        """Separate stems using Demucs Python API (avoids torchaudio save bug)."""
+        """Separate stems using Demucs Python API (avoids torchaudio save bug).
+
+        Runs the configured `demucs_model` (default htdemucs_6s) for guitar/bass/
+        vocals/keys/other. If `STRUM_DRUMS_DEMUCS` is set (default 'htdemucs_ft'),
+        runs that model in addition and uses ITS drum stem — matches what the
+        production drums pipeline (`batch_infer_hybrid`) and tom_refinement_demucs
+        checkpoint were tuned on.
+        """
+        import os
         import soundfile as sf
         from demucs.pretrained import get_model
         from demucs.apply import apply_model
         import torch
 
         logger.info("  Separating stems with Demucs...")
-        
+
         stem_dir = work_dir / "stems"
         stem_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        drums_demucs = os.environ.get("STRUM_DRUMS_DEMUCS", "")
+        use_separate_drums = bool(drums_demucs) and drums_demucs != self.demucs_model
+
         # Check if stems already exist
         expected_stems = ["drums", "bass", "other", "vocals"]
         if all((stem_dir / f"{s}.wav").exists() for s in expected_stems):
             logger.info("    Stems already exist, skipping separation")
             stems = {s: stem_dir / f"{s}.wav" for s in expected_stems}
-            # Check for 6-stem model extras
             for extra in ["guitar", "piano"]:
                 p = stem_dir / f"{extra}.wav"
                 if p.exists():
                     stems[extra] = p
             return stems
-        
-        model = get_model(self.demucs_model)
-        model.eval()
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model.to(device)
-        
-        y, sr_orig = librosa.load(str(audio_path), sr=None, mono=False)
-        if y.ndim == 1:
-            y = np.stack([y, y])
-        
-        target_sr = model.samplerate
-        if sr_orig != target_sr:
-            y = librosa.resample(y, orig_sr=sr_orig, target_sr=target_sr)
-        
-        waveform = torch.from_numpy(y).float()
-        ref = waveform.mean(0)
-        waveform_norm = (waveform - ref.mean()) / ref.std()
-        sources = apply_model(model, waveform_norm[None].to(device), device=device)[0]
-        sources = sources * ref.std() + ref.mean()
-        
+
+        def _run_model(model_name: str):
+            model = get_model(model_name)
+            model.eval()
+            model.to(device)
+            y, sr_orig = librosa.load(str(audio_path), sr=None, mono=False)
+            if y.ndim == 1:
+                y = np.stack([y, y])
+            target_sr = model.samplerate
+            if sr_orig != target_sr:
+                y = librosa.resample(y, orig_sr=sr_orig, target_sr=target_sr)
+            waveform = torch.from_numpy(y).float()
+            ref = waveform.mean(0)
+            waveform_norm = (waveform - ref.mean()) / ref.std()
+            sources = apply_model(model, waveform_norm[None].to(device), device=device)[0]
+            sources = sources * ref.std() + ref.mean()
+            return model.sources, sources, target_sr
+
+        # Primary model (6s for guitar/piano/etc)
+        names, sources, target_sr = _run_model(self.demucs_model)
         stems = {}
-        for i, name in enumerate(model.sources):
+        for i, name in enumerate(names):
             stem = sources[i].cpu().numpy()
             path = stem_dir / f"{name}.wav"
             sf.write(str(path), stem.T, target_sr)
             stems[name] = path
-        
-        logger.info(f"    Separated stems: {list(stems.keys())}")
+        logger.info(f"    Separated stems ({self.demucs_model}): {list(stems.keys())}")
+
+        # Drums-specialist pass (htdemucs_ft) — overwrites drums.wav with the
+        # higher-quality drum stem that production drums pipeline expects.
+        if use_separate_drums:
+            try:
+                logger.info(f"    Re-separating drums with {drums_demucs}...")
+                names_d, sources_d, target_sr_d = _run_model(drums_demucs)
+                if "drums" in names_d:
+                    idx = list(names_d).index("drums")
+                    stem = sources_d[idx].cpu().numpy()
+                    path = stem_dir / "drums.wav"
+                    sf.write(str(path), stem.T, target_sr_d)
+                    stems["drums"] = path
+                    logger.info(f"    Drums stem replaced from {drums_demucs}")
+            except Exception as e:
+                logger.warning(f"    ⚠ {drums_demucs} drums pass failed, keeping {self.demucs_model} drums: {e}")
+
         return stems
     
     def transcribe_drums(self, drums_stem: Path, tempo_bpm: float):
-        """Transcribe drums using V14 hybrid pipeline."""
+        """Transcribe drums using the production batch_infer_hybrid pipeline.
+
+        Mirrors `batch_infer_hybrid.process_song` post-separation flow so that
+        batch_pipeline drums quality matches the standalone production pipeline.
+        """
         if not self.include_drums:
             return None
-        
-        logger.info("  Transcribing drums (V14 hybrid)...")
-        
+
+        logger.info("  Transcribing drums (V14 hybrid + phase3 + tom_refinement)...")
+
         try:
             models = self.drums_models
             if not models or "v14" not in models:
                 logger.warning("  ⚠ Drums models not loaded, skipping")
                 return None
-            
+
             from batch_infer_hybrid import (
                 detect_onsets_v14, extract_onset_windows, classify_onsets_ensemble,
                 build_context_vectors, build_chart, postprocess_chart,
                 _compute_spectral_centroid_features, _compute_onset_rms,
+                run_phase3_inference, phase3_reclassify, phase3_onset_rescue,
+                phase3_cymbal_cooccurrence_rescue, spectral_reclassify,
+                apply_tom_refinement_filter,
+                DEFAULT_CLASS_THRESHOLDS,
+                PHASE3_RECLASS_ENABLED, PHASE3_RESCUE_ENABLED,
+                PHASE3_COOCCURRENCE_ENABLED, SPECTRAL_RECLASS_ENABLED,
             )
-            from src.preprocessing.parsers.midi_parser import DrumChart, TimeSignature
+            from src.preprocessing.parsers.midi_parser import (
+                DrumChart, TimeSignature, TempoEvent,
+            )
             import numpy as np
-            
+
             v14_model = models["v14"]
             ensemble = models["ensemble"]
+            phase3_model = models.get("phase3")
+            tom_refinement = models.get("tom_refinement")
             device = models["device"]
-            
-            # Stage 1: Onset detection
-            onset_times_ms = detect_onsets_v14(v14_model, drums_stem, device, onset_threshold=0.30)
+
+            # Stage 1: V14 onset detection (+ class probs + MC onset probs)
+            onset_times_ms, v14_class_probs, _mc_onset_probs = detect_onsets_v14(
+                v14_model, drums_stem, device, onset_threshold=0.4
+            )
             logger.info(f"    Stage 1: {len(onset_times_ms)} onsets")
-            
+
+            # Use pipeline-level BPM (from full mix) for tempo events
+            tempo_events = [TempoEvent(tick=0, tempo_bpm=tempo_bpm, time_ms=0.0)]
+
             if not onset_times_ms:
-                return None
-            
-            # Stage 2: Extract windows + classify
-            any_needs_cqt = any(e["needs_cqt"] for e in ensemble)
-            windows = extract_onset_windows(drums_stem, onset_times_ms, needs_cqt=any_needs_cqt)
-            
-            # Two-pass context classification
-            context = build_context_vectors(onset_times_ms)
-            logits_pass1 = classify_onsets_ensemble(ensemble, windows, context, device)
-            probs_pass1 = 1.0 / (1.0 + np.exp(-logits_pass1))
-            context = build_context_vectors(onset_times_ms, probs_pass1)
-            logits = classify_onsets_ensemble(ensemble, windows, context, device)
-            probs = 1.0 / (1.0 + np.exp(-logits))
-            
-            # Spectral features
-            spectral_centroids, spectral_high_pcts = _compute_spectral_centroid_features(
-                drums_stem, onset_times_ms
-            )
-            
-            # RMS energy gating (suppress Demucs bleed in non-drum sections)
-            onset_rms = _compute_onset_rms(drums_stem, onset_times_ms)
-            
-            # Build + post-process chart
-            # Use pipeline-level BPM (from full mix) — NOT analyze_audio(drums_stem)
-            # which often detects the wrong octave (e.g. 83 BPM instead of 125)
-            # on an isolated drums stem due to limited harmonic content.
-            from src.preprocessing.parsers.midi_parser import TempoEvent
-            pipeline_tempo_events = [TempoEvent(tick=0, tempo_bpm=tempo_bpm, time_ms=0.0)]
-            chart = build_chart(
-                onset_times_ms, probs, windows["valid_mask"],
-                tempo_events=pipeline_tempo_events,
-                spectral_centroids=spectral_centroids,
-                spectral_high_pcts=spectral_high_pcts,
-                onset_rms=onset_rms,
-            )
-            
+                chart = DrumChart(
+                    hits=[],
+                    tempo_events=tempo_events,
+                    time_signatures=[TimeSignature(tick=0, numerator=4, denominator=4, time_ms=0.0)],
+                    ticks_per_beat=480,
+                )
+            else:
+                # Stage 2: extract windows + ensemble classify (two-pass context)
+                any_needs_cqt = any(e["needs_cqt"] for e in ensemble)
+                windows = extract_onset_windows(
+                    drums_stem, onset_times_ms, needs_cqt=any_needs_cqt
+                )
+
+                context = build_context_vectors(onset_times_ms)
+                logits_pass1 = classify_onsets_ensemble(ensemble, windows, context, device)
+                probs_pass1 = 1.0 / (1.0 + np.exp(-logits_pass1))
+                context = build_context_vectors(onset_times_ms, probs_pass1)
+                logits = classify_onsets_ensemble(ensemble, windows, context, device)
+                probs = 1.0 / (1.0 + np.exp(-logits))
+
+                # Spectral + RMS features
+                spectral_centroids, spectral_high_pcts = _compute_spectral_centroid_features(
+                    drums_stem, onset_times_ms
+                )
+                onset_rms = _compute_onset_rms(drums_stem, onset_times_ms)
+
+                # Build chart with production thresholds
+                chart = build_chart(
+                    onset_times_ms, probs, windows["valid_mask"],
+                    tempo_events=tempo_events,
+                    thresholds=DEFAULT_CLASS_THRESHOLDS,
+                    spectral_centroids=spectral_centroids,
+                    spectral_high_pcts=spectral_high_pcts,
+                    onset_rms=onset_rms,
+                    probs_pass1=probs_pass1,
+                    v14_class_probs=v14_class_probs,
+                )
+
+            # Post-processing
             if chart.hits:
                 chart = postprocess_chart(chart)
-            
+
+            # Phase 3 reclassification + onset rescue + co-occurrence rescue
+            phase3_probs = None
+            if phase3_model is not None and (PHASE3_RECLASS_ENABLED or PHASE3_RESCUE_ENABLED):
+                phase3_probs = run_phase3_inference(phase3_model, drums_stem, device)
+                if PHASE3_RECLASS_ENABLED:
+                    chart = phase3_reclassify(chart, phase3_probs)
+            if phase3_probs is not None and PHASE3_RESCUE_ENABLED:
+                chart = phase3_onset_rescue(chart, phase3_probs)
+            if phase3_probs is not None and PHASE3_COOCCURRENCE_ENABLED:
+                chart = phase3_cymbal_cooccurrence_rescue(chart, phase3_probs)
+
+            # Spectral reclassification (HiHat↔Snare, Crash↔Ride)
+            if SPECTRAL_RECLASS_ENABLED and chart.hits:
+                chart = spectral_reclassify(chart, drums_stem)
+
+            # Tom refinement filter (verifies all tom hits, flips false-positives)
+            if tom_refinement is not None:
+                chart = apply_tom_refinement_filter(chart, drums_stem, tom_refinement, device)
+
+            # FINAL hand-cap re-pass: phase3_onset_rescue,
+            # phase3_cymbal_cooccurrence_rescue, complete_cymbal_patterns and
+            # spectral_reclassify can all add or move hits AFTER the
+            # postprocess_chart hand-cap step ran, leaving 3+ hand notes at
+            # the same tick. Rerun resolve_playability to cap to 2 hands.
+            try:
+                from scripts.chart_postprocess import resolve_playability, protect_tom_fills
+                if chart.hits:
+                    chart = protect_tom_fills(chart)
+                    chart = resolve_playability(chart)
+            except Exception as _e:
+                logger.warning(f"  Final hand-cap pass failed: {_e}")
+
             logger.info(f"    Drums: {len(chart.hits)} Expert hits")
             return chart
-            
+
         except Exception as e:
             logger.warning(f"  ⚠ Drums transcription failed: {e}")
             import traceback
@@ -575,14 +670,21 @@ class BatchPipeline:
             return None, None
     
     def transcribe_keys(self, other_stem: Path):
-        """Transcribe keys/keyboards from other stem."""
+        """Transcribe keys/keyboards from other stem.
+
+        Uses the keyboard-presence detector (force=False) so we don't hallucinate
+        keys onto songs that don't have a keyboard part. Most songs in our test
+        set lack PART KEYS — gating here avoids massive precision loss.
+        """
         if not self.include_keys:
             return None
-        
+
         logger.info("  Transcribing keys...")
-        
+
         try:
-            notes, details = self.keys_charter.transcribe(str(other_stem), force=True)
+            notes, details = self.keys_charter.transcribe(str(other_stem), force=False)
+            if notes is None:
+                logger.info("    Keys: no keyboard detected, skipping")
             return notes
         except Exception as e:
             logger.warning(f"  ⚠ Keys transcription failed: {e}")
@@ -1441,7 +1543,9 @@ def main():
     parser.add_argument("--no-guitar", action="store_true", help="Skip guitar")
     parser.add_argument("--no-bass", action="store_true", help="Skip bass")
     parser.add_argument("--no-vocals", action="store_true", help="Skip vocals")
-    parser.add_argument("--no-keys", action="store_true", help="Skip keys")
+    parser.add_argument("--no-keys", action="store_true", help="(deprecated; keys are off by default)")
+    parser.add_argument("--keys", action="store_true",
+                        help="Enable keys transcription (off by default; detector is unreliable)")
     parser.add_argument("--include-video", action="store_true",
                         help="Download music videos from YouTube (requires yt-dlp)")
     parser.add_argument("--continue", dest="continue_from", action="store_true",
@@ -1456,7 +1560,7 @@ def main():
         include_guitar=not args.no_guitar,
         include_bass=not args.no_bass,
         include_vocals=not args.no_vocals,
-        include_keys=not args.no_keys,
+        include_keys=args.keys and not args.no_keys,
         include_video=args.include_video,
         device=args.device,
     )

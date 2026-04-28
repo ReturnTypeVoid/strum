@@ -10,8 +10,10 @@ Applies musical intelligence to clean up ML predictions:
   5. Ghost note cleanup — remove isolated low-confidence hits
 """
 import logging
+import os
 from dataclasses import dataclass, replace
 from collections import defaultdict
+import bisect
 
 import numpy as np
 
@@ -21,6 +23,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.preprocessing.parsers.midi_parser import DrumChart, DrumHit, TempoEvent
 
 logger = logging.getLogger(__name__)
+
+# ── Env toggles for ablation (1=on, 0=off) ──
+# Defaults updated 2026-04 after RB ablation: backbeat, ghost-cleanup, and
+# snare-roll fill were all net-harmful (+31 FPs, -6 correct combined).
+# Stage 2 of clean_isolated_lane_flips ("noisy zone" resolution) flips toms
+# in fills toward surrounding cymbal context — turn off by default.
+PP_LANE_FLIPS   = os.environ.get("STRUM_PP_LANE_FLIPS", "0") == "1"
+# complete_cymbal_patterns lays a uniform grid over rhythmic patterns and
+# loses the original feel — turn off by default.
+PP_PATTERN_FILL = os.environ.get("STRUM_PP_PATTERN", "0") == "1"
+PP_BACKBEAT     = os.environ.get("STRUM_PP_BACKBEAT", "0") == "1"
+PP_SNARE_ROLL   = os.environ.get("STRUM_PP_SNARE_ROLL", "0") == "1"
+PP_GHOST_KILL   = os.environ.get("STRUM_PP_GHOST", "0") == "1"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -335,6 +350,148 @@ def coarsen_non_runs(chart: DrumChart, fine_subdivision: int = 96,
 
 
 # ══════════════════════════════════════════════════════════════
+# 1b. Cross-lane simultaneous alignment
+# ══════════════════════════════════════════════════════════════
+
+def align_simultaneous_hits(chart: DrumChart, max_subdivision: int = 96,
+                            coarse_subdivision: int = 32,
+                            phase_offset_ms: float = 0.0) -> DrumChart:
+    """Snap notes on different lanes to the same tick when they're nearly simultaneous.
+
+    When a drummer plays kick+snare together, the onset detector may fire
+    two separate onsets a few ms apart.  After quantization these land on
+    adjacent grid points (e.g. 20 ticks apart in MIDI), looking wrong.
+
+    This groups all hits within half a coarse-grid cell and snaps the whole
+    group to the single grid point that the majority already occupy.
+    Only merges across lanes — same-lane near-duplicates are handled by dedup.
+
+    Args:
+        chart: Quantized drum chart.
+        max_subdivision: Fine subdivision used during quantization.
+        coarse_subdivision: Coarse subdivision (32nd notes) for non-run notes.
+        phase_offset_ms: Grid phase offset for re-snapping.
+
+    Returns:
+        New DrumChart with cross-lane simultaneous hits aligned.
+    """
+    if not chart.hits or not chart.tempo_events:
+        return chart
+
+    tempo_bpm = chart.tempo_events[0].tempo_bpm
+    ms_per_beat = 60_000.0 / tempo_bpm
+    coarse_grid_ms = ms_per_beat / (coarse_subdivision / 4)
+    # Merge window: half a coarse grid cell.  After coarsen_non_runs,
+    # non-run notes sit on 32nd-note grid points.  Two notes on adjacent
+    # grid points (different lanes) that should be simultaneous need this
+    # wider window to get grouped together.
+    merge_window_ms = coarse_grid_ms * 0.55
+
+    # Fine grid for run detection
+    fine_grid_ms = ms_per_beat / (max_subdivision / 4)
+
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+
+    # Build per-lane sorted time lists to detect runs
+    import bisect
+    lane_times: dict[int, list[float]] = defaultdict(list)
+    for hit in hits_sorted:
+        lane_times[hit.lane].append(hit.time_ms)
+
+    def _is_in_run(hit_time: float, lane: int, threshold_ms: float = None) -> bool:
+        """True if this hit has close same-lane neighbors (part of a fast run)."""
+        if threshold_ms is None:
+            threshold_ms = fine_grid_ms * 4  # ~4 fine-grid steps
+        times = lane_times[lane]
+        pos = bisect.bisect_left(times, hit_time)
+        # Check left neighbor
+        if pos > 0 and (hit_time - times[pos - 1]) <= threshold_ms:
+            return True
+        # Check right neighbor
+        if pos < len(times) - 1 and (times[pos + 1] - hit_time) <= threshold_ms:
+            return True
+        return False
+
+    # Build groups of hits within merge_window_ms of each other
+    groups: list[list[int]] = []  # list of index lists
+    current_group: list[int] = [0]
+
+    for i in range(1, len(hits_sorted)):
+        if hits_sorted[i].time_ms - hits_sorted[current_group[0]].time_ms <= merge_window_ms:
+            current_group.append(i)
+        else:
+            groups.append(current_group)
+            current_group = [i]
+    groups.append(current_group)
+
+    aligned = 0
+    new_hits = list(hits_sorted)
+
+    for group in groups:
+        if len(group) < 2:
+            continue
+
+        # Check if this group has hits on multiple lanes
+        lanes = set(hits_sorted[i].lane for i in group)
+        if len(lanes) < 2:
+            continue
+
+        # Safety: don't merge notes in fast runs on the same lane.
+        # If multiple hits in the group share a lane, skip — they're
+        # separate intentional notes, not a simultaneous pair.
+        from collections import Counter
+        lane_counts = Counter(hits_sorted[i].lane for i in group)
+        if any(c > 1 for c in lane_counts.values()):
+            continue
+
+        # Run protection: if ALL notes in the group are in fast runs on
+        # their own lanes, this is likely a dense section where different
+        # lanes have interleaved notes (e.g. hihat 16ths + snare 8ths).
+        # Only merge when at least one note is isolated on its lane.
+        run_flags = [
+            _is_in_run(hits_sorted[i].time_ms, hits_sorted[i].lane)
+            for i in group
+        ]
+        if all(run_flags):
+            continue
+
+        # Find the target time to snap to.  Prioritize notes that are
+        # in runs — they sit on a well-defined grid and shouldn't be
+        # moved.  Isolated notes snap TO run notes, not vice versa.
+        run_times = [round(hits_sorted[group[j]].time_ms, 2)
+                     for j in range(len(group)) if run_flags[j]]
+        if run_times:
+            time_counts = Counter(run_times)
+            target_time = time_counts.most_common(1)[0][0]
+        else:
+            # No run notes — use mode of all times
+            time_counts = Counter(round(hits_sorted[i].time_ms, 2) for i in group)
+            target_time = time_counts.most_common(1)[0][0]
+
+        # Snap all hits in the group to the target time
+        for i in group:
+            if abs(hits_sorted[i].time_ms - target_time) > 0.5:
+                new_hits[i] = replace(hits_sorted[i], time_ms=target_time)
+                aligned += 1
+
+    # Dedup after alignment (same lane, same time)
+    new_hits.sort(key=lambda h: (h.time_ms, h.lane, not h.is_cymbal))
+    deduped = []
+    for hit in new_hits:
+        if deduped and abs(hit.time_ms - deduped[-1].time_ms) < 1.0 \
+                and hit.lane == deduped[-1].lane:
+            continue
+        deduped.append(hit)
+
+    removed = len(new_hits) - len(deduped)
+    if aligned > 0:
+        logger.info(f"  Cross-lane alignment: {aligned} hits snapped to simultaneous"
+                    f" ({removed} dupes removed)")
+
+    return replace(chart, hits=deduped)
+
+
+# ══════════════════════════════════════════════════════════════
 # 2. Minimum gap enforcement
 # ══════════════════════════════════════════════════════════════
 
@@ -365,6 +522,319 @@ def enforce_min_gap(chart: DrumChart, min_gap_ms: float = 30.0) -> DrumChart:
     if removed > 0:
         logger.info(f"  Min gap: removed {removed} hits (<{min_gap_ms}ms apart)")
 
+    return replace(chart, hits=kept)
+
+
+# ══════════════════════════════════════════════════════════════
+# 2c. Clean isolated tom/cymbal flips on shared lanes
+# ══════════════════════════════════════════════════════════════
+
+def clean_isolated_lane_flips(
+    chart: DrumChart,
+    max_isolated_len: int = 2,
+    min_neighbor_len: int = 2,
+) -> DrumChart:
+    """Fix remaining isolated tom↔cymbal flips on shared lanes.
+
+    After onset classification and streak smoothing, some isolated mis-classified
+    notes survive because spectral / fill / density protections blocked the
+    correction. A single tom note in a long cymbal run (or vice versa) is almost
+    never a real instrument change — it's a classification error.
+
+    Two-stage approach:
+    1. Fix isolated short streaks (≤max_isolated_len) flanked by ≥min_neighbor_len
+       runs of the opposite type on each side.
+    2. Fix alternating clusters: rapid CTCTC or TCTCT patterns where the classifier
+       oscillates. These are resolved by looking at the dominant type in a wider
+       window surrounding the cluster.
+
+    Args:
+        chart: Drum chart (after streak smoothing and quantization).
+        max_isolated_len: Maximum streak length to consider "isolated".
+        min_neighbor_len: Minimum length of flanking runs to trigger correction.
+    """
+    if not chart.hits:
+        return chart
+
+    SHARED_LANES = [2, 3, 4]
+    hits = list(chart.hits)
+
+    # Pre-compute tom-density times for fill detection: skip flipping a tom
+    # toward cymbal when the tom is part of a fill (≥3 toms within ±300ms).
+    all_tom_times = sorted(
+        h.time_ms for h in hits
+        if h.lane in (2, 3, 4) and not h.is_cymbal
+    )
+
+    def _in_fill(t_ms: float) -> bool:
+        if len(all_tom_times) < 3:
+            return False
+        lo = bisect.bisect_left(all_tom_times, t_ms - 300.0)
+        hi = bisect.bisect_right(all_tom_times, t_ms + 300.0)
+        return (hi - lo) >= 3
+
+    total_fixed = 0
+    tom_to_cym = 0
+    cym_to_tom = 0
+
+    for lane in SHARED_LANES:
+        # Get indices of hits on this lane, sorted by time
+        lane_indices = [i for i, h in enumerate(hits) if h.lane == lane]
+        if len(lane_indices) < 5:
+            continue
+
+        # ── Stage 1: Fix isolated streaks (iterative) ──
+        for _pass in range(3):
+            changed = 0
+
+            streaks: list[tuple[bool, int, int]] = []
+            s_start = 0
+            for j in range(1, len(lane_indices)):
+                if hits[lane_indices[j]].is_cymbal != hits[lane_indices[s_start]].is_cymbal:
+                    streaks.append((hits[lane_indices[s_start]].is_cymbal, s_start, j - 1))
+                    s_start = j
+            streaks.append((hits[lane_indices[s_start]].is_cymbal, s_start, len(lane_indices) - 1))
+
+            for si, (is_cym, j_start, j_end) in enumerate(streaks):
+                streak_len = j_end - j_start + 1
+                if streak_len > max_isolated_len:
+                    continue
+                if si == 0 or si == len(streaks) - 1:
+                    continue
+
+                prev_is_cym, _, prev_end = streaks[si - 1]
+                next_is_cym, next_start, next_end = streaks[si + 1]
+                prev_len = prev_end - streaks[si - 1][1] + 1
+                next_len = next_end - next_start + 1
+
+                if prev_is_cym == is_cym or next_is_cym == is_cym:
+                    continue
+
+                if prev_len < min_neighbor_len or next_len < min_neighbor_len:
+                    continue
+
+                target_cymbal = prev_is_cym
+
+                # Skip if this would convert toms-in-fill to cymbals.
+                # Stage 1 fires aggressively when a single tom (or pair of toms)
+                # appears inside a cymbal groove; a fill of a few toms surrounded
+                # by hi-hats matches this pattern but should NOT be flipped.
+                if target_cymbal and not is_cym:
+                    streak_t0 = hits[lane_indices[j_start]].time_ms
+                    streak_t1 = hits[lane_indices[j_end]].time_ms
+                    mid_t = (streak_t0 + streak_t1) * 0.5
+                    if _in_fill(mid_t):
+                        continue
+
+                for j in range(j_start, j_end + 1):
+                    idx = lane_indices[j]
+                    hits[idx] = replace(hits[idx], is_cymbal=target_cymbal)
+                    total_fixed += 1
+                    changed += 1
+                    if target_cymbal:
+                        tom_to_cym += 1
+                    else:
+                        cym_to_tom += 1
+
+            if changed == 0:
+                break
+
+        # ── Stage 2: Fix alternating clusters ──
+        # Pattern like ...CCC T C T CCC... where classifier oscillates.
+        # Find "noisy zones" = regions with ≥2 type changes within a short span,
+        # then resolve by dominant type of the surrounding stable sections.
+        streaks = []
+        s_start = 0
+        for j in range(1, len(lane_indices)):
+            if hits[lane_indices[j]].is_cymbal != hits[lane_indices[s_start]].is_cymbal:
+                streaks.append((hits[lane_indices[s_start]].is_cymbal, s_start, j - 1))
+                s_start = j
+        streaks.append((hits[lane_indices[s_start]].is_cymbal, s_start, len(lane_indices) - 1))
+
+        if len(streaks) < 4:
+            continue
+
+        # Find noisy zones: consecutive short streaks (all ≤2 notes)
+        # A noisy zone is 3+ consecutive streaks that are all short.
+        i = 0
+        while i < len(streaks):
+            slen = streaks[i][2] - streaks[i][1] + 1
+            if slen > max_isolated_len:
+                i += 1
+                continue
+
+            # Found a short streak — extend to find full noisy zone
+            zone_start = i
+            zone_end = i
+            while zone_end + 1 < len(streaks):
+                next_slen = streaks[zone_end + 1][2] - streaks[zone_end + 1][1] + 1
+                if next_slen <= max_isolated_len:
+                    zone_end += 1
+                else:
+                    break
+
+            n_streaks = zone_end - zone_start + 1
+            if n_streaks >= 3:
+                # Skip if this looks like a real fill (tom-dominated zone),
+                # not a classifier oscillation. A fill that ends with a crash
+                # is the canonical false-positive: the noisy zone is mostly
+                # toms with a single trailing cymbal, but the surrounding
+                # context is the cymbal groove that follows.
+                zone_tom_count = 0
+                zone_cym_count = 0
+                for si2 in range(zone_start, zone_end + 1):
+                    is_cym_z, j_s, j_e = streaks[si2]
+                    n_in_streak = j_e - j_s + 1
+                    if is_cym_z:
+                        zone_cym_count += n_in_streak
+                    else:
+                        zone_tom_count += n_in_streak
+                # If toms are the majority, leave the fill alone
+                if zone_tom_count > zone_cym_count:
+                    i = zone_end + 1
+                    continue
+
+                # This is a noisy zone — resolve from surrounding context
+                # Look at the stable streaks before and after the zone
+                before_cym = None
+                before_len = 0
+                if zone_start > 0:
+                    before_cym = streaks[zone_start - 1][0]
+                    before_len = streaks[zone_start - 1][2] - streaks[zone_start - 1][1] + 1
+
+                after_cym = None
+                after_len = 0
+                if zone_end + 1 < len(streaks):
+                    after_cym = streaks[zone_end + 1][0]
+                    after_len = streaks[zone_end + 1][2] - streaks[zone_end + 1][1] + 1
+
+                # Determine target type from surrounding stable sections
+                target = None
+                if before_cym is not None and after_cym is not None:
+                    if before_cym == after_cym:
+                        # Both sides agree — resolve to that type
+                        target = before_cym
+                    else:
+                        # Sides disagree — use the longer side
+                        target = before_cym if before_len >= after_len else after_cym
+                elif before_cym is not None:
+                    target = before_cym
+                elif after_cym is not None:
+                    target = after_cym
+
+                if target is not None:
+                    # Flip all notes in the noisy zone to the target type
+                    for si2 in range(zone_start, zone_end + 1):
+                        _, j_s, j_e = streaks[si2]
+                        for j in range(j_s, j_e + 1):
+                            idx = lane_indices[j]
+                            if hits[idx].is_cymbal != target:
+                                hits[idx] = replace(hits[idx], is_cymbal=target)
+                                total_fixed += 1
+                                if target:
+                                    tom_to_cym += 1
+                                else:
+                                    cym_to_tom += 1
+
+            i = zone_end + 1
+
+    if total_fixed > 0:
+        logger.info(f"  Clean lane flips: {total_fixed} fixed "
+                    f"({tom_to_cym} tom→cymbal, {cym_to_tom} cymbal→tom)")
+
+    return replace(chart, hits=hits)
+
+
+# ══════════════════════════════════════════════════════════════
+# 2b. Tom-fill cymbal protection
+# ══════════════════════════════════════════════════════════════
+
+def protect_tom_fills(
+    chart: DrumChart,
+    fill_window_ms: float = 250.0,
+    min_toms_for_fill: int = 3,
+    keep_last_cymbal_within_ms: float = 80.0,
+) -> DrumChart:
+    """Strip phantom cymbals from inside tom-roll fills.
+
+    Multiple upstream stages (build_chart cymbal co-fire, phase3 co-occurrence
+    rescue, complete_cymbal_patterns) inject cymbals at kick/snare positions.
+    Inside a tom roll/fill those cymbals are almost always wrong — either
+    classifier confusion (low tom misread as ride) or co-fire false positives.
+
+    A 'fill region' = any tom (lane 2/3/4 + is_cymbal=False) with ≥
+    `min_toms_for_fill - 1` other toms within ±fill_window_ms.
+
+    Rule: inside fill regions, drop cymbals on Yellow/Blue/Green (lanes 2/3/4).
+    Exception: keep a single CRASH at end-of-fill (cymbal within
+    `keep_last_cymbal_within_ms` of the last tom in the fill cluster — drummers
+    routinely punctuate fills with a crash). Snare/kick/hihat unaffected.
+    """
+    if not chart.hits:
+        return chart
+
+    tom_times = sorted(
+        h.time_ms for h in chart.hits
+        if h.lane in (2, 3, 4) and not h.is_cymbal
+    )
+    if len(tom_times) < min_toms_for_fill:
+        return chart
+
+    # Build fill-region intervals by clustering toms within fill_window_ms
+    cluster_starts: list[float] = []
+    cluster_ends: list[float] = []
+    cur_start = tom_times[0]
+    cur_end = tom_times[0]
+    cur_count = 1
+    for t in tom_times[1:]:
+        if t - cur_end <= fill_window_ms:
+            cur_end = t
+            cur_count += 1
+        else:
+            if cur_count >= min_toms_for_fill:
+                cluster_starts.append(cur_start)
+                cluster_ends.append(cur_end)
+            cur_start = t
+            cur_end = t
+            cur_count = 1
+    if cur_count >= min_toms_for_fill:
+        cluster_starts.append(cur_start)
+        cluster_ends.append(cur_end)
+
+    if not cluster_starts:
+        return chart
+
+    import bisect as _bisect
+
+    def _cluster_idx(t_ms: float) -> int:
+        """Return cluster index containing t_ms, or -1."""
+        i = _bisect.bisect_right(cluster_starts, t_ms) - 1
+        if i >= 0 and t_ms <= cluster_ends[i] + keep_last_cymbal_within_ms:
+            return i
+        return -1
+
+    kept = []
+    dropped = 0
+    for hit in chart.hits:
+        if hit.lane in (2, 3, 4) and hit.is_cymbal:
+            ci = _cluster_idx(hit.time_ms)
+            if ci >= 0:
+                # End-of-fill crash exception: keep CRASH (lane 4) within
+                # keep_last_cymbal_within_ms after cluster end
+                end = cluster_ends[ci]
+                if (hit.lane == 4
+                        and hit.time_ms > end
+                        and hit.time_ms - end <= keep_last_cymbal_within_ms):
+                    kept.append(hit)
+                    continue
+                # Inside the fill — drop the cymbal
+                dropped += 1
+                continue
+        kept.append(hit)
+
+    if dropped > 0:
+        logger.info(f"  Tom-fill protection: dropped {dropped} cymbals from "
+                    f"{len(cluster_starts)} fill region(s)")
     return replace(chart, hits=kept)
 
 
@@ -647,6 +1117,98 @@ def reinforce_backbeat(
 
 
 # ══════════════════════════════════════════════════════════════
+# 4b. Snare roll gap fill
+# ══════════════════════════════════════════════════════════════
+
+def fill_snare_roll_gaps(
+    chart: DrumChart,
+    min_run_length: int = 8,
+    max_gap_ratio: float = 2.5,
+    max_fills_per_run: int = 3,
+) -> DrumChart:
+    """Fill single-hit gaps in detected snare rolls.
+
+    In dense snare sections (16th-note rolls at ~90ms IOI), the onset
+    detector sometimes misses 1-2 hits, creating holes in an otherwise
+    consistent pattern.  This function detects runs of regularly-spaced
+    snare hits and fills single gaps where the interval jumps to ~2x
+    the normal spacing (indicating one missed hit).
+
+    Args:
+        chart: Input drum chart.
+        min_run_length: Minimum number of snare hits in a run to qualify.
+        max_gap_ratio: Maximum ratio of gap IOI to median IOI to fill.
+        max_fills_per_run: Maximum fills allowed per detected run.
+    """
+    if not chart.hits:
+        return chart
+
+    snare_times = sorted(h.time_ms for h in chart.hits if h.lane == 1)
+    if len(snare_times) < min_run_length:
+        return chart
+
+    # Find runs of regularly-spaced snares (IOI within 30% of median)
+    iois = [snare_times[i + 1] - snare_times[i]
+            for i in range(len(snare_times) - 1)]
+
+    added = 0
+    new_hits = list(chart.hits)
+    existing_times = {h.time_ms for h in chart.hits if h.lane == 1}
+
+    # Sliding window: find dense runs
+    i = 0
+    while i < len(iois):
+        # Collect a run of similar IOIs
+        run_start = i
+        run_iois = [iois[i]]
+        j = i + 1
+        while j < len(iois):
+            median_ioi = sorted(run_iois)[len(run_iois) // 2]
+            if iois[j] < median_ioi * max_gap_ratio and iois[j] > median_ioi * 0.3:
+                run_iois.append(iois[j])
+                j += 1
+            else:
+                break
+        run_end = j  # exclusive
+
+        # Only process runs with enough hits and fast enough spacing
+        run_len = run_end - run_start + 1  # number of hits
+        if run_len >= min_run_length:
+            # Filter to only the "normal" IOIs (exclude gaps)
+            normal_iois = [v for v in run_iois if v < 200]
+            if len(normal_iois) >= min_run_length // 2:
+                median_ioi = sorted(normal_iois)[len(normal_iois) // 2]
+                # Only fill in fast rolls (16th notes or faster, < 150ms)
+                if median_ioi < 150:
+                    # Scan for gaps: IOI roughly 2x median
+                    run_fills = 0
+                    for k in range(run_start, run_end):
+                        if run_fills >= max_fills_per_run:
+                            break
+                        if iois[k] > median_ioi * 1.6 and iois[k] < median_ioi * max_gap_ratio:
+                            # Fill one hit in the middle
+                            fill_time = snare_times[k] + median_ioi
+                            # Don't double-add
+                            if not any(abs(t - fill_time) < median_ioi * 0.3
+                                       for t in existing_times):
+                                new_hits.append(DrumHit(
+                                    time_ms=fill_time, tick=0, lane=1,
+                                    is_cymbal=False, velocity=90,
+                                ))
+                                existing_times.add(fill_time)
+                                added += 1
+                                run_fills += 1
+
+        i = max(j, i + 1)
+
+    if added > 0:
+        new_hits.sort(key=lambda h: h.time_ms)
+        logger.info(f"  Snare roll fill: +{added} snares in dense sections")
+
+    return replace(chart, hits=new_hits)
+
+
+# ══════════════════════════════════════════════════════════════
 # 5. Ghost note cleanup
 # ══════════════════════════════════════════════════════════════
 
@@ -703,6 +1265,73 @@ def remove_isolated_hits(
         logger.info(f"  Ghost cleanup: removed {removed} isolated hits")
 
     return replace(chart, hits=kept)
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. Bleed compensation — restore missing snares alongside kicks
+# ══════════════════════════════════════════════════════════════
+
+def compensate_bleed(chart: DrumChart,
+                     window_ms: float = 500.0,
+                     min_snares: int = 4,
+                     min_snare_ratio: float = 3.0) -> DrumChart:
+    """Add missing snare hits alongside kicks in snare-dense sections.
+
+    Demucs separation loses snare transients during rapid kick+snare
+    sections — the kick's low-frequency energy dominates after bleed, so
+    the classifier sees "kick" but the coexisting snare vanishes.
+
+    For each kick that has no simultaneous snare, checks if the local
+    neighbourhood (±window_ms) is snare-dominated.  If so, adds a snare
+    at the kick's (already quantized) position.
+
+    Runs AFTER quantization so that added snares stay on the same tick
+    as the kick and aren't deduped by coarsening.
+    """
+    if not chart.hits:
+        return chart
+
+    import bisect
+
+    hits = list(chart.hits)
+    snare_times_sorted = sorted(h.time_ms for h in hits if h.lane == 1)
+    kick_times_sorted = sorted(h.time_ms for h in hits if h.lane == 0)
+    snare_time_set = set(snare_times_sorted)
+
+    added = 0
+    for h in hits:
+        if h.lane != 0:
+            continue
+        if h.time_ms in snare_time_set:
+            continue
+
+        # Count snares within ±window
+        lo = bisect.bisect_left(snare_times_sorted, h.time_ms - window_ms)
+        hi = bisect.bisect_right(snare_times_sorted, h.time_ms + window_ms)
+        nearby_snares = hi - lo
+        if nearby_snares < min_snares:
+            continue
+
+        # Count kicks within ±window (excluding self)
+        lo_k = bisect.bisect_left(kick_times_sorted, h.time_ms - window_ms)
+        hi_k = bisect.bisect_right(kick_times_sorted, h.time_ms + window_ms)
+        nearby_kicks = hi_k - lo_k - 1
+
+        if nearby_kicks > 0 and nearby_snares / nearby_kicks < min_snare_ratio:
+            continue
+
+        hits.append(DrumHit(
+            time_ms=h.time_ms, tick=h.tick, lane=1,
+            is_cymbal=False, velocity=100,
+        ))
+        snare_time_set.add(h.time_ms)
+        added += 1
+
+    if added > 0:
+        hits.sort(key=lambda h: h.time_ms)
+        logger.info(f"  Bleed compensation: {added} snares restored alongside kicks")
+
+    return replace(chart, hits=hits)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -780,6 +1409,53 @@ def resolve_playability(chart: DrumChart) -> DrumChart:
 
 # ══════════════════════════════════════════════════════════════
 
+def _quantize_segment(seg_chart: DrumChart, tempo_bpm: float) -> DrumChart:
+    """Run the four-stage quantization stack on a single tempo segment.
+
+    Each segment is quantized using its own BPM and an independently
+    computed phase offset. This prevents global drift on songs with
+    tempo changes (where a single global grid built on the first
+    tempo would get progressively out of phase with the audio in
+    later segments).
+    """
+    ms_per_beat = 60_000.0 / tempo_bpm
+    MIN_GRID_MS = 20.0  # V14 onset detector min_distance_ms
+    for subdiv in [192, 96, 64, 48, 32, 24, 16, 12, 8, 4]:
+        grid_ms = ms_per_beat / (subdiv / 4)
+        if grid_ms >= MIN_GRID_MS:
+            break
+    else:
+        subdiv = 4
+
+    fine_grid_ms = ms_per_beat / (subdiv / 4)
+    phase_offset = _compute_phase_offset([h.time_ms for h in seg_chart.hits], fine_grid_ms)
+
+    _STANDARD_SUBDIVS = [4, 8, 12, 16, 24, 32, 48, 64, 96, 192]
+    if subdiv in _STANDARD_SUBDIVS:
+        _fine_idx = _STANDARD_SUBDIVS.index(subdiv)
+        coarse_subdiv = _STANDARD_SUBDIVS[max(0, _fine_idx - 1)]
+    else:
+        coarse_subdiv = 32
+
+    logger.info(
+        f"    segment @{tempo_bpm:.2f} BPM: grid={subdiv}th "
+        f"({fine_grid_ms:.1f}ms)  coarse={coarse_subdiv}th  "
+        f"phase={phase_offset:.1f}ms  hits={len(seg_chart.hits)}"
+    )
+
+    seg_chart = quantize_hits(seg_chart, max_subdivision=subdiv,
+                              phase_offset_ms=phase_offset)
+    seg_chart = regularize_runs(seg_chart, max_subdivision=subdiv,
+                                phase_offset_ms=phase_offset)
+    seg_chart = coarsen_non_runs(seg_chart, fine_subdivision=subdiv,
+                                 coarse_subdivision=coarse_subdiv,
+                                 phase_offset_ms=phase_offset)
+    seg_chart = align_simultaneous_hits(seg_chart, max_subdivision=subdiv,
+                                        coarse_subdivision=coarse_subdiv,
+                                        phase_offset_ms=phase_offset)
+    return seg_chart
+
+
 def postprocess_chart(chart: DrumChart) -> DrumChart:
     """Apply all post-processing steps in order.
 
@@ -790,6 +1466,10 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
       4. Pattern completion (needs clean grid-aligned hits)
       5. Backbeat reinforcement (after pattern fill)
       6. Ghost cleanup last (after everything else has been added)
+
+    Quantization (step 2) is applied PER TEMPO SEGMENT so that songs
+    with tempo changes do not accumulate phase drift from using a
+    single global BPM/phase across the whole song.
     """
     if not chart.hits:
         return chart
@@ -799,35 +1479,48 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
 
     chart = enforce_min_gap(chart, min_gap_ms=20.0)
 
-    # Tempo-adaptive quantization: pick the finest standard subdivision
-    # whose grid spacing stays above the V14 detector floor (20ms).
-    # This ensures rolls/fills are preserved at any tempo while avoiding
-    # false note splits from quantization noise.
-    tempo = chart.tempo_events[0].tempo_bpm if chart.tempo_events else 120
-    ms_per_beat = 60_000.0 / tempo
-    # Standard subdivisions (finest to coarsest) that divide 480 ticks evenly
-    MIN_GRID_MS = 20.0  # V14 onset detector min_distance_ms
-    for subdiv in [192, 96, 64, 48, 32, 24, 16, 12, 8, 4]:
-        grid_ms = ms_per_beat / (subdiv / 4)
-        if grid_ms >= MIN_GRID_MS:
-            break
+    # Per-segment quantization. Build segment boundaries from
+    # tempo_events: segment i covers [events[i].time_ms, events[i+1].time_ms).
+    tempo_events = chart.tempo_events or [TempoEvent(tick=0, tempo_bpm=120.0, time_ms=0.0)]
+    n_segments = len(tempo_events)
+    if n_segments == 1:
+        logger.info(f"  Quantization: single tempo segment @{tempo_events[0].tempo_bpm:.2f} BPM")
     else:
-        subdiv = 4
-    logger.info(f"  Quantization grid: {subdiv}th notes ({ms_per_beat / (subdiv / 4):.1f}ms at {tempo:.1f} BPM)")
+        logger.info(f"  Quantization: {n_segments} tempo segments")
 
-    # Compute grid phase offset once from raw hit times, reuse for all steps
-    fine_grid_ms = ms_per_beat / (subdiv / 4)
-    phase_offset = _compute_phase_offset([h.time_ms for h in chart.hits], fine_grid_ms)
+    seg_boundaries = [te.time_ms for te in tempo_events] + [float("inf")]
+    new_hits: list[DrumHit] = []
+    for seg_idx in range(n_segments):
+        lo, hi = seg_boundaries[seg_idx], seg_boundaries[seg_idx + 1]
+        seg_hits = [h for h in chart.hits if lo <= h.time_ms < hi]
+        if not seg_hits:
+            continue
+        seg_chart = DrumChart(
+            hits=seg_hits,
+            tempo_events=[tempo_events[seg_idx]],
+            time_signatures=chart.time_signatures,
+            ticks_per_beat=chart.ticks_per_beat,
+        )
+        seg_chart = _quantize_segment(seg_chart, tempo_events[seg_idx].tempo_bpm)
+        new_hits.extend(seg_chart.hits)
 
-    chart = quantize_hits(chart, max_subdivision=subdiv, phase_offset_ms=phase_offset)
-    chart = regularize_runs(chart, max_subdivision=subdiv,
-                            phase_offset_ms=phase_offset)
-    chart = coarsen_non_runs(chart, fine_subdivision=subdiv, coarse_subdivision=32,
-                             phase_offset_ms=phase_offset)
+    chart = DrumChart(
+        hits=sorted(new_hits, key=lambda h: h.time_ms),
+        tempo_events=chart.tempo_events,
+        time_signatures=chart.time_signatures,
+        ticks_per_beat=chart.ticks_per_beat,
+    )
     chart = resolve_playability(chart)
-    chart = complete_cymbal_patterns(chart)
-    chart = reinforce_backbeat(chart)
-    chart = remove_isolated_hits(chart)
+    if PP_LANE_FLIPS:
+        chart = clean_isolated_lane_flips(chart)
+    if PP_PATTERN_FILL:
+        chart = complete_cymbal_patterns(chart)
+    if PP_BACKBEAT:
+        chart = reinforce_backbeat(chart)
+    if PP_SNARE_ROLL:
+        chart = fill_snare_roll_gaps(chart)
+    if PP_GHOST_KILL:
+        chart = remove_isolated_hits(chart)
 
     final_count = len(chart.hits)
     diff = final_count - original_count

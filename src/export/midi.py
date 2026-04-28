@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 import logging
+import os
 
 import mido
 
@@ -132,12 +133,37 @@ def export_drums_midi(
     
     # Sort by tick
     hits_with_ticks.sort(key=lambda h: h.tick)
-    
+
+    # ------------------------------------------------------------------
+    # 2x bass pedal detection.
+    # Clone Hero / YARG convention: MIDI note 95 = "expert+ kick" (the
+    # 2nd pedal). When a player has only a single pedal, those notes are
+    # hidden; with two pedals enabled, both note 95 and note 96 play.
+    # We promote the SECOND kick of any rapid kick pair (gap < 175 ms,
+    # ~ 16th-notes at 100 BPM) to note 95 so the regular 1x bass chart
+    # remains playable while a 2x bass version is available.
+    # Disable via STRUM_TWO_KICK=0.
+    # ------------------------------------------------------------------
+    enable_2x = os.environ.get("STRUM_TWO_KICK", "1") == "1"
+    two_kick_gap_ms = float(os.environ.get("STRUM_TWO_KICK_GAP_MS", "175"))
+    is_two_kick: dict[int, bool] = {}
+    if enable_2x:
+        prev_kick_ms = -1e9
+        for idx, h in enumerate(hits_with_ticks):
+            if h.lane != 0:
+                continue
+            if h.time_ms - prev_kick_ms < two_kick_gap_ms:
+                is_two_kick[idx] = True
+            prev_kick_ms = h.time_ms
+
     # Build MIDI events
     events = []
     
-    for hit in hits_with_ticks:
+    for idx, hit in enumerate(hits_with_ticks):
         base_note = _get_midi_note(hit)
+        # Promote 2nd kick of a fast pair to note 95 (2x bass).
+        if hit.lane == 0 and is_two_kick.get(idx, False):
+            base_note = 95
         tom_marker = _get_tom_marker(hit)
         velocity = hit.velocity
         
@@ -421,9 +447,30 @@ def export_all_difficulties(
     for difficulty, chart in difficulty_charts.items():
         note_offset = DIFFICULTY_NOTE_OFFSETS[difficulty]
         hits_with_ticks = _compute_hit_ticks(chart, config.ticks_per_beat)
-        
-        for hit in hits_with_ticks:
+        hits_with_ticks.sort(key=lambda h: h.tick)
+
+        # 2x bass detection — Expert track only.  Promote 2nd kick of any
+        # rapid pair (gap < STRUM_TWO_KICK_GAP_MS, default 175 ms ⇒ ~16ths
+        # at 100 BPM) to MIDI note 95.  Clone Hero / YARG render note 95
+        # only when the player has 2x bass enabled, leaving a clean 1x
+        # kick chart (note 96) for single-pedal players.  Disable via
+        # STRUM_TWO_KICK=0.
+        is_two_kick: dict[int, bool] = {}
+        if difficulty == "expert" and os.environ.get("STRUM_TWO_KICK", "1") == "1":
+            two_kick_gap_ms = float(os.environ.get("STRUM_TWO_KICK_GAP_MS", "175"))
+            prev_kick_ms = -1e9
+            for idx, h in enumerate(hits_with_ticks):
+                if h.lane != 0:
+                    continue
+                if h.time_ms - prev_kick_ms < two_kick_gap_ms:
+                    is_two_kick[idx] = True
+                prev_kick_ms = h.time_ms
+
+        for idx, hit in enumerate(hits_with_ticks):
             base_note = _get_midi_note(hit) + note_offset
+            # Promote 2nd kick of a fast pair to note 95 on Expert.
+            if hit.lane == 0 and is_two_kick.get(idx, False):
+                base_note = 95
             tom_marker = _get_tom_marker(hit)  # None or 110/111/112
             velocity = hit.velocity
             

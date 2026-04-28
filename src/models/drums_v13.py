@@ -336,6 +336,7 @@ class TwoStageDrumsCRNN(nn.Module):
         classifier_hidden: int = 512,
         num_classes: int = 8,
         predict_velocity: bool = True,
+        cymbal_onset_head: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -430,8 +431,108 @@ class TwoStageDrumsCRNN(nn.Module):
                 nn.Linear(classifier_hidden, num_classes),
             )
         
+        # ── Cymbal/Tom Onset Head (optional, for multi-head onset) ──
+        self.has_cymbal_onset = cymbal_onset_head
+        if cymbal_onset_head:
+            self.cymbal_onset_detector = nn.Sequential(
+                nn.Linear(feat_dim, onset_detector_hidden),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(onset_detector_hidden, 1),
+            )
+        
+        # ── Multi-Class Onset Head (optional, direct per-class onset) ──
+        self.has_multiclass_onset = False  # set via add_multiclass_onset_head()
+        self.multiclass_onset_detector = None
+        self._deep_mc_head = False  # set via add_deep_multiclass_head()
+        
         self.dropout_layer = nn.Dropout(dropout)
         self._count_params()
+    
+    def add_multiclass_onset_head(self) -> None:
+        """Add a multi-class onset detector head (8 per-class onset outputs).
+        
+        Uses the same hidden dim as the original onset detector but outputs
+        8 channels instead of 1. Each channel independently predicts onset
+        probability for one drum class.
+        """
+        # Infer dimensions from existing onset detector
+        feat_dim = self.onset_detector[0].in_features
+        hidden_dim = self.onset_detector[0].out_features
+        dropout_p = self.dropout_layer.p
+        
+        self.multiclass_onset_detector = nn.Sequential(
+            nn.Linear(feat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_p),
+            nn.Linear(hidden_dim, self.num_classes),
+        )
+        self.has_multiclass_onset = True
+        self._count_params()
+
+    def add_deep_multiclass_head(self, hidden_dim: int = 256, n_conv_layers: int = 3, kernel_size: int = 5) -> None:
+        """Add a deeper multi-class onset head with temporal 1D convolutions.
+        
+        Architecture:
+          features (B, T, feat_dim)
+          → transpose to (B, feat_dim, T)
+          → 1D Conv blocks: Conv1D + BN + ReLU + Dropout (×n_conv_layers, residual)
+          → transpose back to (B, T, hidden)
+          → MLP: Linear → ReLU → Dropout → Linear → 8
+        
+        The Conv1D layers capture local temporal patterns (onset shape, 
+        neighboring frame relationships) that the frame-independent linear head misses.
+        """
+        feat_dim = self.onset_detector[0].in_features  # 512
+        dropout_p = self.dropout_layer.p
+        pad = (kernel_size - 1) // 2  # same padding
+
+        conv_layers = []
+        in_ch = feat_dim
+        for i in range(n_conv_layers):
+            out_ch = hidden_dim if i > 0 else hidden_dim
+            conv_layers.append(nn.Sequential(
+                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=pad),
+                nn.BatchNorm1d(out_ch),
+                nn.ReLU(),
+                nn.Dropout(dropout_p),
+            ))
+            in_ch = out_ch
+
+        self._deep_mc_convs = nn.ModuleList(conv_layers)
+        # Projection for residual when dimensions change
+        self._deep_mc_proj = nn.Conv1d(feat_dim, hidden_dim, 1) if feat_dim != hidden_dim else nn.Identity()
+        
+        self._deep_mc_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_p),
+            nn.Linear(hidden_dim, self.num_classes),
+        )
+        self.has_multiclass_onset = True
+        self._deep_mc_head = True  # flag for forward()
+        self._count_params()
+
+    def _deep_mc_forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Forward through the deep multi-class head.
+        
+        Args:
+            features: (B, T, feat_dim) from feature_proj
+        Returns:
+            logits: (B, T, 8)
+        """
+        x = features.transpose(1, 2)  # (B, feat_dim, T)
+        residual = self._deep_mc_proj(x)  # (B, hidden, T)
+        
+        for i, conv_block in enumerate(self._deep_mc_convs):
+            if i == 0:
+                x = conv_block(x)
+            else:
+                x = conv_block(x) + x  # residual within conv stack
+        
+        x = x + residual  # skip connection from input
+        x = x.transpose(1, 2)  # (B, T, hidden)
+        return self._deep_mc_mlp(x)  # (B, T, 8)
     
     def _count_params(self) -> None:
         total = sum(p.numel() for p in self.parameters())
@@ -492,6 +593,19 @@ class TwoStageDrumsCRNN(nn.Module):
         if self.predict_velocity:
             outputs['velocities'] = torch.sigmoid(self.velocity_head(features))
         
+        if self.has_cymbal_onset:
+            cymbal_logits = self.cymbal_onset_detector(features)  # (B, T, 1)
+            outputs['cymbal_onset_logits'] = cymbal_logits
+            outputs['cymbal_onset_probs'] = torch.sigmoid(cymbal_logits)
+        
+        if self.has_multiclass_onset:
+            if self._deep_mc_head:
+                mc_logits = self._deep_mc_forward(features)  # (B, T, 8)
+            else:
+                mc_logits = self.multiclass_onset_detector(features)  # (B, T, 8)
+            outputs['mc_onset_logits'] = mc_logits
+            outputs['mc_onset_probs'] = torch.sigmoid(mc_logits)
+        
         return outputs
     
     def inference(
@@ -545,9 +659,12 @@ class TwoStageLoss(nn.Module):
         Uses pos_weight to handle ~2% onset density.
     
     Stage 2 Loss (classification):
-        Focal BCE ONLY at ground-truth onset frames. 8 independent binary
-        classifiers (allowing simultaneous hits, e.g., kick+crash).
-        Per-class weights handle imbalance among onsets.
+        Focal BCE at ground-truth onset frames plus optional temporal
+        margin. When ``classify_margin_frames > 0``, frames within
+        ±margin of each onset are supervised with class_targets=0.0
+        (teaching the model that sustain ≠ onset). This addresses
+        crash bias where the model learns to predict crash everywhere
+        because sustain frames were never supervised.
     
     Velocity Loss:
         MSE at onset frames only.
@@ -563,6 +680,8 @@ class TwoStageLoss(nn.Module):
         onset_loss_weight: float = 1.0,
         classify_loss_weight: float = 2.0,
         velocity_loss_weight: float = 0.3,
+        classify_margin_frames: int = 0,
+        onset_class_pos_weights: list[float] = None,
     ):
         super().__init__()
         self.onset_pos_weight = onset_pos_weight
@@ -572,11 +691,32 @@ class TwoStageLoss(nn.Module):
         self.onset_loss_weight = onset_loss_weight
         self.classify_loss_weight = classify_loss_weight
         self.velocity_loss_weight = velocity_loss_weight
+        self.classify_margin_frames = classify_margin_frames
+        self.onset_class_pos_weights = onset_class_pos_weights
         
         if classify_class_weight is None:
             self.classify_class_weight = [1.0] * 8
         else:
             self.classify_class_weight = classify_class_weight
+
+    @staticmethod
+    def _expand_onset_mask(onset_mask: torch.Tensor, margin: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Expand onset mask by ±margin frames for temporal supervision.
+
+        Returns:
+            expanded_mask: (B, T) bool — True at onset frames AND margin frames
+            is_onset: (B, T) bool — True ONLY at actual onset frames
+        """
+        if margin <= 0:
+            return onset_mask, onset_mask
+        # Use max_pool1d to dilate the boolean mask
+        B, T = onset_mask.shape
+        mask_f = onset_mask.float().unsqueeze(1)  # (B, 1, T)
+        kernel = 2 * margin + 1
+        dilated = torch.nn.functional.max_pool1d(
+            mask_f, kernel_size=kernel, stride=1, padding=margin,
+        ).squeeze(1) > 0.5  # (B, T)
+        return dilated, onset_mask
     
     def _focal_bce(
         self,
@@ -599,6 +739,53 @@ class TwoStageLoss(nn.Module):
         focal = (1 - p_t) ** gamma
         return (focal * bce).mean()
     
+    def _focal_bce_class_aware(
+        self,
+        logits: torch.Tensor,           # (B, T)
+        targets: torch.Tensor,           # (B, T)
+        class_targets: torch.Tensor,     # (B, T, 8)
+        base_pos_weight: float,
+        class_pos_weights: torch.Tensor, # (8,)
+        gamma: float,
+    ) -> torch.Tensor:
+        """Focal BCE with per-frame pos_weight derived from which drum class is active.
+
+        For each onset frame, the pos_weight = base_pos_weight * max(class_pos_weights[active_classes]).
+        For negative frames, pos_weight doesn't matter (target=0, so pos_weight is irrelevant
+        in BCE formula — it only scales the positive term).
+
+        This makes the detector penalize missing a Ride (class 4) onset more heavily
+        than missing a Kick (class 0) onset, teaching it to be more sensitive to
+        high-frequency cymbal transients.
+        """
+        logits_f = logits.float()
+        targets_f = targets.float()
+
+        # Compute per-frame pos_weight: for onset frames, use max weight of active classes
+        # class_targets: (B, T, 8), class_pos_weights: (8,)
+        # For each frame, take max weight among active (>0.5) classes, default 1.0
+        active_weights = class_targets.float() * class_pos_weights.unsqueeze(0).unsqueeze(0)  # (B, T, 8)
+        frame_class_weight = active_weights.max(dim=-1).values  # (B, T)
+        # Non-onset frames get weight 1.0 (doesn't matter, but be safe)
+        frame_class_weight = torch.where(targets_f > 0.5, frame_class_weight.clamp(min=1.0), torch.ones_like(frame_class_weight))
+        
+        # Per-frame pos_weight = base * class_weight
+        frame_pw = base_pos_weight * frame_class_weight  # (B, T)
+        
+        # Manual focal BCE with per-frame pos_weight
+        # BCE = -[pw * t * log(σ(x)) + (1-t) * log(σ(-x))]
+        log_sigmoid_pos = F.logsigmoid(logits_f)       # log σ(x)
+        log_sigmoid_neg = F.logsigmoid(-logits_f)      # log σ(-x) = log(1-σ(x))
+        bce = -(frame_pw * targets_f * log_sigmoid_pos + (1 - targets_f) * log_sigmoid_neg)
+        
+        # Focal term
+        probs = torch.sigmoid(logits_f)
+        p_t = torch.where(targets_f > 0.5, probs, 1 - probs)
+        p_t = p_t.clamp(min=1e-6, max=1 - 1e-6)
+        focal = (1 - p_t) ** gamma
+        
+        return (focal * bce).mean()
+
     def forward(
         self,
         predictions: dict[str, torch.Tensor],
@@ -631,22 +818,58 @@ class TwoStageLoss(nn.Module):
         losses = {}
         
         # ── Stage 1: Onset detection loss (all frames) ──
-        onset_loss = self._focal_bce(
-            onset_logits.squeeze(-1),
-            onset_targets.squeeze(-1),
-            pos_weight=self.onset_pos_weight,
-            gamma=self.onset_focal_gamma,
-        )
+        if self.onset_class_pos_weights is not None:
+            # Class-aware onset loss: weight positive frames by which
+            # drum class is present, so the detector learns that missing
+            # a ride is worse than missing a kick (which it already nails).
+            onset_loss = self._focal_bce_class_aware(
+                onset_logits.squeeze(-1),       # (B, T)
+                onset_targets.squeeze(-1),       # (B, T)
+                class_targets,                   # (B, T, 8)
+                base_pos_weight=self.onset_pos_weight,
+                class_pos_weights=torch.tensor(
+                    self.onset_class_pos_weights,
+                    device=onset_logits.device,
+                    dtype=torch.float32,
+                ),
+                gamma=self.onset_focal_gamma,
+            )
+        else:
+            onset_loss = self._focal_bce(
+                onset_logits.squeeze(-1),
+                onset_targets.squeeze(-1),
+                pos_weight=self.onset_pos_weight,
+                gamma=self.onset_focal_gamma,
+            )
         losses['onset_det'] = onset_loss.item()
         
-        # ── Stage 2: Classification loss (onset frames only) ──
+        # ── Stage 2: Classification loss (onset frames + optional margin) ──
         # Mask: frames where ANY class has a ground-truth onset
         onset_mask = onset_targets.squeeze(-1) > 0.5  # (B, T)
-        
-        if onset_mask.any():
-            # Extract logits and targets at onset frames
-            masked_logits = class_logits[onset_mask].float()     # (N_onsets, 8) — fp32
-            masked_targets = class_targets[onset_mask].float()   # (N_onsets, 8) — fp32
+
+        # Temporal margin: expand mask to ±N frames around onsets.
+        # margin frames get class_targets=0 (teaching sustain≠onset).
+        if self.classify_margin_frames > 0:
+            expanded_mask, is_onset = self._expand_onset_mask(
+                onset_mask, self.classify_margin_frames
+            )
+        else:
+            expanded_mask = onset_mask
+            is_onset = onset_mask
+
+        if expanded_mask.any():
+            # Extract logits at expanded region
+            masked_logits = class_logits[expanded_mask].float()     # (N, 8) — fp32
+
+            # Targets: real class labels at onset frames, zeros at margin frames
+            if self.classify_margin_frames > 0:
+                # Start with all zeros for the expanded region
+                masked_targets = torch.zeros_like(masked_logits)
+                # Fill in real targets at actual onset positions
+                onset_within_expanded = is_onset[expanded_mask]  # bool mask within expanded
+                masked_targets[onset_within_expanded] = class_targets[onset_mask].float()
+            else:
+                masked_targets = class_targets[onset_mask].float()   # (N_onsets, 8) — fp32
             
             # Apply label smoothing
             if self.label_smoothing > 0:

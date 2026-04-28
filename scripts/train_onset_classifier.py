@@ -43,17 +43,25 @@ from src.models.onset_classifier_cached_dataset import (
 
 
 def onset_collate_fn(batch):
-    """Custom collate that handles optional mel_lowfreq (5th element may be None)."""
-    # batch is list of (mel_fine, mel_coarse, context, label, mel_lowfreq_or_None)
-    if len(batch[0]) == 5:
-        core = [(b[0], b[1], b[2], b[3]) for b in batch]
-        collated = default_collate(core)
-        if batch[0][4] is not None:
-            lowfreq = default_collate([b[4] for b in batch])
-        else:
-            lowfreq = None
-        return (*collated, lowfreq)
-    return default_collate(batch)
+    """Custom collate that handles optional mel_lowfreq and crash_flux."""
+    # batch is list of (mel_fine, mel_coarse, context, label, mel_lowfreq_or_None, crash_flux_or_None)
+    n_elem = len(batch[0])
+    core = [(b[0], b[1], b[2], b[3]) for b in batch]
+    collated = list(default_collate(core))
+
+    # 5th element: mel_lowfreq (optional)
+    if n_elem > 4 and batch[0][4] is not None:
+        collated.append(default_collate([b[4] for b in batch]))
+    else:
+        collated.append(None)
+
+    # 6th element: crash_flux (optional)
+    if n_elem > 5 and batch[0][5] is not None:
+        collated.append(default_collate([b[5] for b in batch]))
+    else:
+        collated.append(None)
+
+    return tuple(collated)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -229,6 +237,8 @@ def build_model(config) -> OnsetClassifier:
         tom_head_hidden=model_cfg.get("tom_head_hidden", 256),
         use_lowfreq_branch=model_cfg.get("use_lowfreq_branch", False),
         use_lowfreq_spectral=model_cfg.get("use_lowfreq_spectral", False),
+        use_crash_flux=model_cfg.get("use_crash_flux", False),
+        crash_flux_dim=model_cfg.get("crash_flux_dim", 32),
     )
 
 
@@ -273,6 +283,12 @@ def evaluate_streaming(
     elif lowfreq_file and (cache_path / lowfreq_file).exists():
         lowfreq_mm = np.load(str(cache_path / lowfreq_file), mmap_mode='r')
 
+    # Crash flux (V19+)
+    crash_flux_file = index["files"].get("crash_flux")
+    crash_flux_mm = None
+    if crash_flux_file and (cache_path / crash_flux_file).exists():
+        crash_flux_mm = np.load(str(cache_path / crash_flux_file), mmap_mode='r')
+
     tp = np.zeros(num_classes)
     fp = np.zeros(num_classes)
     fn = np.zeros(num_classes)
@@ -290,6 +306,7 @@ def evaluate_streaming(
             ctx = contexts_mm[start:end].astype(np.float32)
             lbl = labels_mm[start:end].astype(np.float32)
             lf = lowfreq_mm[start:end].astype(np.float32) if lowfreq_mm is not None else None
+            cf = crash_flux_mm[start:end].astype(np.float32) if crash_flux_mm is not None else None
 
             # Process in mini-batches within the chunk
             for b_start in range(0, len(mf), batch_size):
@@ -302,8 +319,11 @@ def evaluate_streaming(
                 t_lf = None
                 if lf is not None:
                     t_lf = torch.from_numpy(lf[b_start:b_end]).unsqueeze(1).to(device)
+                t_cf = None
+                if cf is not None:
+                    t_cf = torch.from_numpy(cf[b_start:b_end]).to(device)
 
-                logits = model(t_fine, t_coarse, t_ctx, mel_lowfreq=t_lf)
+                logits = model(t_fine, t_coarse, t_ctx, mel_lowfreq=t_lf, crash_flux=t_cf)
                 loss = criterion(logits, t_lbl)
                 total_loss += loss.item() * t_lbl.shape[0]
                 num_samples += t_lbl.shape[0]
@@ -332,10 +352,10 @@ def evaluate_streaming(
                                 confusion[tc][pc] += 1
 
             # Explicitly free chunk arrays to release memory
-            del mf, mc, ctx, lbl, lf
+            del mf, mc, ctx, lbl, lf, cf
 
     # Close mmaps
-    del mel_fine_mm, mel_coarse_mm, contexts_mm, labels_mm, lowfreq_mm
+    del mel_fine_mm, mel_coarse_mm, contexts_mm, labels_mm, lowfreq_mm, crash_flux_mm
 
     # Per-class metrics
     results = {}
@@ -440,6 +460,13 @@ def train(config):
     clean_mask_path = config.get("clean_mask_path", None)
     bleed_cache_dir = config.get("bleed_cache_dir", None)
     bleed_prob = config.get("bleed_prob", 0.5)
+    # Skip lowfreq branch mmap for models that don't use it (saves ~33 GB)
+    skip_lowfreq = not config.model.get("use_lowfreq_branch", False)
+    # Skip crash flux mmap for models that don't use it
+    skip_crash_flux = not config.model.get("use_crash_flux", False)
+    # Cap training onsets to reduce mmap page pressure on unified memory systems
+    # (133 GB mmap vs 128.5 GB RAM → deadlock without cap)
+    max_train_onsets = config.get("max_train_onsets", 0)
     train_ds = CachedOnsetDataset(
         cache_dir=cache_dir,
         split="train",
@@ -452,6 +479,10 @@ def train(config):
         clean_mask_path=clean_mask_path,
         bleed_cache_dir=bleed_cache_dir,
         bleed_prob=bleed_prob,
+        skip_lowfreq=skip_lowfreq,
+        max_onsets=max_train_onsets,
+        skip_crash_flux=skip_crash_flux,
+        primary_class_strategy=config.get("primary_class_strategy", "argmax"),
     )
 
     # NOTE: val dataset is created on-demand during eval to avoid permanent
@@ -459,15 +490,25 @@ def train(config):
     print(f"Train: {len(train_ds)} onsets")
     print(f"Val:   loaded on-demand (cache: {cache_dir})")
 
-    # Sampler (class-balanced or tom-boosted)
+    # Sampler (class-balanced, tom-boosted, or crash-boosted)
     tcfg = config.training
     max_train = tcfg.get("max_train_batches", 0)
     sampler_num_samples = min(max_train * tcfg.batch_size, len(train_ds)) if max_train else None
     if sampler_num_samples:
         print(f"\nSampler num_samples: {sampler_num_samples} (vs {len(train_ds)} total)")
 
+    crash_boost = config.get("crash_boost_sampling", {})
     tom_boost = config.get("tom_boost_sampling", {})
-    if tom_boost.get("enabled", False):
+    if crash_boost.get("enabled", False):
+        crash_fraction = crash_boost.get("crash_fraction", 0.3)
+        tom_fraction = tom_boost.get("tom_fraction", 0.0) if tom_boost.get("enabled", False) else 0.0
+        train_sampler = train_ds.get_crash_boosted_sampler(
+            crash_fraction=crash_fraction,
+            tom_fraction=tom_fraction,
+            num_samples=sampler_num_samples,
+        )
+        print(f"\nCrash-boosted sampling enabled (crash={crash_fraction}, tom={tom_fraction}):")
+    elif tom_boost.get("enabled", False):
         tom_fraction = tom_boost.get("tom_fraction", 0.5)
         train_sampler = train_ds.get_tom_boosted_sampler(tom_fraction=tom_fraction, num_samples=sampler_num_samples)
         print(f"\nTom-boosted sampling enabled (tom_fraction={tom_fraction}):")
@@ -491,6 +532,10 @@ def train(config):
         prefetch_factor=4 if nw > 0 else None,
     )
     # val evaluation uses evaluate_streaming() — no DataLoader needed
+
+    # Drop page cache before model creation — init scanned all labels for _primary_classes
+    train_ds.drop_page_cache()
+    gc.collect()
 
     # Model
     print("\nBuilding model...")
@@ -643,6 +688,7 @@ def train(config):
 
             mel_fine, mel_coarse, context, labels = batch[0], batch[1], batch[2], batch[3]
             mel_lowfreq = batch[4] if len(batch) > 4 else None
+            crash_flux = batch[5] if len(batch) > 5 else None
 
             mel_fine = mel_fine.to(device)
             mel_coarse = mel_coarse.to(device)
@@ -650,6 +696,8 @@ def train(config):
             labels = labels.to(device)
             if mel_lowfreq is not None:
                 mel_lowfreq = mel_lowfreq.to(device)
+            if crash_flux is not None:
+                crash_flux = crash_flux.to(device)
 
             # Save original labels for contrastive loss (needs hard labels)
             labels_orig = labels.clone() if use_contrastive else None
@@ -663,15 +711,17 @@ def train(config):
                 mel_coarse = lam * mel_coarse + (1 - lam) * mel_coarse[idx]
                 if mel_lowfreq is not None:
                     mel_lowfreq = lam * mel_lowfreq + (1 - lam) * mel_lowfreq[idx]
+                if crash_flux is not None:
+                    crash_flux = lam * crash_flux + (1 - lam) * crash_flux[idx]
                 context = lam * context + (1 - lam) * context[idx]
                 labels = lam * labels + (1 - lam) * labels[idx]
 
             # Forward pass — V5 returns extra features for contrastive/aux losses
             need_features = use_contrastive or use_aux_head
             if need_features:
-                logits, extras = model(mel_fine, mel_coarse, context, return_features=True, mel_lowfreq=mel_lowfreq)
+                logits, extras = model(mel_fine, mel_coarse, context, return_features=True, mel_lowfreq=mel_lowfreq, crash_flux=crash_flux)
             else:
-                logits = model(mel_fine, mel_coarse, context, mel_lowfreq=mel_lowfreq)
+                logits = model(mel_fine, mel_coarse, context, mel_lowfreq=mel_lowfreq, crash_flux=crash_flux)
 
             # Main classification loss (focal BCE)
             # Loss computation: ASL or focal BCE
@@ -735,7 +785,8 @@ def train(config):
                 pbar.set_postfix(loss=f"{running_loss/num_batches:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.1e}")
 
             # Periodically release mmap page cache to prevent CUDA memory starvation
-            if batch_idx % 250 == 249:
+            # (community cache is 133 GB vs 128.5 GB unified memory — frequent drops needed)
+            if batch_idx % 50 == 49:
                 train_ds.drop_page_cache()
 
         scheduler.step()

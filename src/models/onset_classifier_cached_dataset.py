@@ -48,6 +48,10 @@ class CachedOnsetDataset(Dataset):
         clean_mask_path: str | None = None,
         bleed_cache_dir: str | None = None,
         bleed_prob: float = 0.5,
+        skip_lowfreq: bool = False,
+        max_onsets: int = 0,
+        skip_crash_flux: bool = True,
+        primary_class_strategy: str = "argmax",
     ):
         cache_dir = Path(cache_dir)
         index_path = cache_dir / f"{split}_index.json"
@@ -57,6 +61,10 @@ class CachedOnsetDataset(Dataset):
             index = json.load(f)
 
         self.total = index["total_onsets"]
+        if max_onsets > 0 and max_onsets < self.total:
+            logger.info(f"  Capping {split} onsets: {self.total} → {max_onsets} "
+                        f"(reduces mmap page pressure)")
+            self.total = max_onsets
 
         # Memory-map the arrays (readonly)
         self.mel_fine = np.load(
@@ -66,7 +74,10 @@ class CachedOnsetDataset(Dataset):
         # CQT or low-freq mel (backward compat: try CQT first, then mel_lowfreq)
         cqt_file = index["files"].get("cqt")
         lowfreq_file = index["files"].get("mel_lowfreq")
-        if cqt_file and (cache_dir / cqt_file).exists():
+        if skip_lowfreq:
+            self.mel_lowfreq = None
+            logger.info(f"  Skipping lowfreq branch (skip_lowfreq=True, saves ~33 GB mmap)")
+        elif cqt_file and (cache_dir / cqt_file).exists():
             self.mel_lowfreq = np.load(
                 str(cache_dir / cqt_file), mmap_mode='r')
             logger.info(f"  Loaded CQT branch: {cqt_file}")
@@ -95,13 +106,48 @@ class CachedOnsetDataset(Dataset):
         self.freq_mask_width = freq_mask_width
         self.time_mask_width = time_mask_width
 
-        # Build class counts from index (avoid scanning all labels)
-        self.class_counts = Counter()
-        for k, v in index.get("class_counts", {}).items():
-            self.class_counts[int(k)] += v
-
         # Primary class per onset (scan labels — fast even for 2.7M with memmap)
-        self._primary_classes = self.labels[:self.total].argmax(axis=1)
+        # "argmax" (default): lowest active index — backward compatible
+        # "rarest": pick the rarest class among active classes — fixes crash
+        #   undersampling (79% of crash onsets are invisible with argmax because
+        #   kick/snare always have lower indices and co-occur with crash 57%+)
+        if primary_class_strategy == "rarest":
+            labels_slice = self.labels[:self.total]
+            # Compute true per-class occurrence counts
+            class_freq = np.array([
+                (labels_slice[:, c] > 0.5).sum() for c in range(8)
+            ], dtype=np.float64)
+            # For each onset, pick the active class with lowest frequency
+            # Build a "rarity score" per class, assign +inf for inactive classes
+            rarity = np.where(class_freq > 0, 1.0 / class_freq, 0.0)  # (8,)
+            # active_rarity[i, c] = rarity[c] if label[i,c] > 0.5 else 0
+            active_rarity = (labels_slice > 0.5).astype(np.float64) * rarity[np.newaxis, :]
+            self._primary_classes = active_rarity.argmax(axis=1)
+            logger.info(f"  Primary class strategy: rarest (fixes co-occurrence bias)")
+        else:
+            self._primary_classes = self.labels[:self.total].argmax(axis=1)
+
+        # Build class counts — recompute from actual data if truncated or using rarest strategy
+        if primary_class_strategy == "rarest" or (max_onsets > 0 and max_onsets < index["total_onsets"]):
+            self.class_counts = Counter(int(c) for c in self._primary_classes)
+        else:
+            self.class_counts = Counter()
+            for k, v in index.get("class_counts", {}).items():
+                self.class_counts[int(k)] += v
+
+        # Optional crash-band spectral flux (V19+)
+        self.crash_flux = None
+        crash_flux_file = index["files"].get("crash_flux")
+        if skip_crash_flux:
+            logger.info(f"  Skipping crash_flux (skip_crash_flux=True)")
+        elif crash_flux_file and (cache_dir / crash_flux_file).exists():
+            self.crash_flux = np.load(
+                str(cache_dir / crash_flux_file), mmap_mode='r')
+            if self.crash_flux is not None and hasattr(self.crash_flux, '_mmap'):
+                self._mmaps.append(self.crash_flux._mmap)
+            logger.info(f"  Loaded crash_flux: {crash_flux_file}")
+        else:
+            logger.info(f"  crash_flux not available in cache")
 
         # Optional clean mask: boolean array excluding suspected mislabeled songs
         self.clean_mask: np.ndarray | None = None
@@ -157,7 +203,7 @@ class CachedOnsetDataset(Dataset):
     def __len__(self) -> int:
         return self.total
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         # With bleed_prob, use bleed-augmented features instead of clean
         use_bleed = (self._bleed_fine is not None
                      and idx < self._bleed_total
@@ -185,7 +231,14 @@ class CachedOnsetDataset(Dataset):
         context = torch.from_numpy(context.copy())
         label = torch.from_numpy(label.copy())
 
-        return mel_fine, mel_coarse, context, label, mel_lowfreq
+        # Crash-band spectral flux (V19+)
+        crash_flux = None
+        if self.crash_flux is not None:
+            crash_flux = torch.from_numpy(
+                self.crash_flux[idx].astype(np.float32).copy()
+            )  # (2, 87) — already has channel dim from preprocessing
+
+        return mel_fine, mel_coarse, context, label, mel_lowfreq, crash_flux
 
     def _augment(
         self, mel_fine: np.ndarray, mel_coarse: np.ndarray, primary_class: int,
@@ -317,6 +370,68 @@ class CachedOnsetDataset(Dataset):
         if nontom_total > 0:
             nontom_w *= (1.0 - tom_fraction) / nontom_total
         weights = tom_w + nontom_w
+        weights = self._apply_clean_mask(weights)
+
+        return WeightedRandomSampler(
+            weights=torch.from_numpy(weights).double(),
+            num_samples=num_samples or len(self),
+            replacement=True,
+        )
+
+    def get_crash_boosted_sampler(
+        self,
+        crash_fraction: float = 0.3,
+        tom_fraction: float = 0.0,
+        num_samples: int | None = None,
+    ) -> WeightedRandomSampler:
+        """Sampler that boosts crash-positive AND optionally tom-positive examples.
+
+        Ensures crash-positive examples get ``crash_fraction`` of total
+        sampling weight, tom-positive examples get ``tom_fraction``, and
+        remaining examples get ``1 - crash_fraction - tom_fraction``.
+
+        This addresses crash under-representation caused by the
+        primary_class="argmax" strategy (crash co-occurs with kick/snare
+        and gets masked from sampling).
+
+        Args:
+            crash_fraction: Target fraction for crash-positive examples.
+            tom_fraction: Target fraction for tom-positive examples (0 = disabled).
+        """
+        CRASH_IDX = 6
+        TOM_INDICES = [3, 5, 7]
+        labels = self.labels[:self.total]
+
+        is_crash = labels[:, CRASH_IDX] > 0.5
+        is_tom = np.zeros(self.total, dtype=bool)
+        for ti in TOM_INDICES:
+            is_tom |= (labels[:, ti] > 0.5)
+        # Crash takes priority over tom when both active
+        is_tom_only = is_tom & ~is_crash
+        is_other = ~is_crash & ~is_tom_only
+
+        inv_freq = np.array([1.0 / max(self.class_counts.get(c, 1), 1)
+                             for c in range(8)], dtype=np.float64)
+        all_weights = inv_freq[self._primary_classes[:self.total]]
+
+        crash_w = np.where(is_crash, all_weights, 0.0)
+        tom_w = np.where(is_tom_only, all_weights, 0.0)
+        other_w = np.where(is_other, all_weights, 0.0)
+
+        other_fraction = 1.0 - crash_fraction - tom_fraction
+
+        crash_total = crash_w.sum()
+        tom_total = tom_w.sum()
+        other_total = other_w.sum()
+
+        if crash_total > 0:
+            crash_w *= crash_fraction / crash_total
+        if tom_fraction > 0 and tom_total > 0:
+            tom_w *= tom_fraction / tom_total
+        if other_total > 0:
+            other_w *= other_fraction / other_total
+
+        weights = crash_w + tom_w + other_w
         weights = self._apply_clean_mask(weights)
 
         return WeightedRandomSampler(

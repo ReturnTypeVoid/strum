@@ -148,12 +148,14 @@ def phase2_extract(
     mf_path = cache_dir / f"{split}_mel_fine.npy"
     mc_path = cache_dir / f"{split}_mel_coarse.npy"
     ml_path = cache_dir / f"{split}_mel_lowfreq.npy"
+    cf_path = cache_dir / f"{split}_crash_flux.npy"
     lb_path = cache_dir / f"{split}_labels.npy"
     ctx_path = cache_dir / f"{split}_contexts.npy"
 
     mf_shape = (total_onsets, N_MELS, FINE_FRAMES)
     mc_shape = (total_onsets, N_MELS, COARSE_FRAMES)
     ml_shape = (total_onsets, N_MELS, LOWFREQ_FRAMES)
+    cf_shape = (total_onsets, 2, FINE_FRAMES)  # crash-band energy + flux
     lb_shape = (total_onsets, 8)
     ctx_shape = (total_onsets, 2 * CONTEXT_SIZE * 8)
 
@@ -162,6 +164,7 @@ def phase2_extract(
         (mf_path, mf_shape, np.float16),
         (mc_path, mc_shape, np.float16),
         (ml_path, ml_shape, np.float16),
+        (cf_path, cf_shape, np.float16),
         (lb_path, lb_shape, np.uint8),
         (ctx_path, ctx_shape, np.float16),
     ]:
@@ -171,6 +174,7 @@ def phase2_extract(
     mm_fine = np.lib.format.open_memmap(str(mf_path), mode='r+')
     mm_coarse = np.lib.format.open_memmap(str(mc_path), mode='r+')
     mm_lowfreq = np.lib.format.open_memmap(str(ml_path), mode='r+')
+    mm_crash_flux = np.lib.format.open_memmap(str(cf_path), mode='r+')
     mm_labels = np.lib.format.open_memmap(str(lb_path), mode='r+')
     mm_ctx = np.lib.format.open_memmap(str(ctx_path), mode='r+')
 
@@ -280,12 +284,20 @@ def phase2_extract(
             mm_labels[offset] = label
             mm_ctx[offset] = context
 
+            # Crash-band spectral flux (derived from fine mel, bins 80-127)
+            crash_band = mf[80:128, :]  # (48, FINE_FRAMES)
+            crash_energy = crash_band.mean(dim=0)  # (FINE_FRAMES,)
+            crash_diff = torch.diff(crash_energy, prepend=crash_energy[:1])
+            crash_flux = torch.relu(crash_diff)
+            mm_crash_flux[offset, 0, :] = crash_energy.numpy().astype(np.float16)
+            mm_crash_flux[offset, 1, :] = crash_flux.numpy().astype(np.float16)
+
             primary = min(classes)
             class_counts[primary] += 1
             offset += 1
 
     # Flush memmaps
-    del mm_fine, mm_coarse, mm_lowfreq, mm_labels, mm_ctx
+    del mm_fine, mm_coarse, mm_lowfreq, mm_crash_flux, mm_labels, mm_ctx
 
     actual_count = offset
     logger.info(f"\n  Written: {actual_count}/{total_onsets} onsets "
@@ -298,6 +310,7 @@ def phase2_extract(
             (mf_path, mf_shape, np.float16),
             (mc_path, mc_shape, np.float16),
             (ml_path, ml_shape, np.float16),
+            (cf_path, cf_shape, np.float16),
             (lb_path, lb_shape, np.uint8),
             (ctx_path, ctx_shape, np.float16),
         ]:
@@ -355,6 +368,7 @@ def extract_split(manifest_path: Path, split: str, cache_dir: Path):
             "mel_fine": f"{split}_mel_fine.npy",
             "mel_coarse": f"{split}_mel_coarse.npy",
             "mel_lowfreq": f"{split}_mel_lowfreq.npy",
+            "crash_flux": f"{split}_crash_flux.npy",
             "labels": f"{split}_labels.npy",
             "contexts": f"{split}_contexts.npy",
         },

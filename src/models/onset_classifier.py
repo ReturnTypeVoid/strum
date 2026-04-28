@@ -309,6 +309,38 @@ class OnsetContextEncoder(nn.Module):
         return self.net(context)
 
 
+class CrashFluxEncoder(nn.Module):
+    """Encode crash-band spectral flux time series into a compact embedding.
+
+    Input: (B, 2, T) where:
+      - Channel 0: Crash-band energy profile (mean of mel bins 80-127)
+      - Channel 1: Crash-band onset flux (positive half-wave rectified diff)
+
+    A true crash onset produces a large spike in channel 1 at the onset
+    position (~frame 17). Crash sustain, ride shimmer, and Demucs bleed
+    show flat/zero flux. This distinction is invisible to the mel CNN
+    which compresses temporal dynamics via global average pooling.
+    """
+
+    def __init__(self, in_channels: int = 2, out_dim: int = 32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, 16, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(16, 32, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),  # (B, 32, 1)
+            nn.Flatten(),             # (B, 32)
+            nn.Linear(32, out_dim),
+            nn.ReLU(),
+        )
+        self.out_dim = out_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Input: (B, 2, T) → Output: (B, out_dim)."""
+        return self.net(x)
+
+
 class OnsetClassifier(nn.Module):
     """
     Dual-resolution onset classifier with SE attention, spectral features,
@@ -342,6 +374,8 @@ class OnsetClassifier(nn.Module):
         use_lowfreq_branch: bool = False,
         use_lowfreq_spectral: bool = False,
         context_classes: int | None = None,
+        use_crash_flux: bool = False,
+        crash_flux_dim: int = 32,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -349,6 +383,7 @@ class OnsetClassifier(nn.Module):
         self.use_dual_head = use_dual_head
         self.use_lowfreq_branch = use_lowfreq_branch
         self.use_lowfreq_spectral = use_lowfreq_spectral
+        self.use_crash_flux = use_crash_flux
 
         # Optional HPSS layer: splits mel into 3 channels [original, harmonic, percussive]
         self.hpss = HPSSLayer() if use_hpss else None
@@ -391,6 +426,14 @@ class OnsetClassifier(nn.Module):
                 nn.ReLU(),
             )
 
+        # V19: Crash-band spectral flux encoder.
+        # Encodes the temporal onset-novelty profile of 5-22 kHz energy.
+        # True crash onsets show a sharp positive spike; sustain/bleed is flat.
+        self.crash_flux_encoder = None
+        if use_crash_flux:
+            self.crash_flux_encoder = CrashFluxEncoder(
+                in_channels=2, out_dim=crash_flux_dim)
+
         # Fusion dimension
         fused_dim = (
             self.fine_branch.out_channels
@@ -402,6 +445,8 @@ class OnsetClassifier(nn.Module):
             fused_dim += self.lowfreq_branch.out_channels
         if use_lowfreq_spectral:
             fused_dim += spectral_dim
+        if use_crash_flux:
+            fused_dim += crash_flux_dim
 
         if use_dual_head:
             # V8: Separate classification heads for common vs tom classes.
@@ -475,6 +520,7 @@ class OnsetClassifier(nn.Module):
         context: torch.Tensor,
         return_features: bool = False,
         mel_lowfreq: torch.Tensor | None = None,
+        crash_flux: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # Optional HPSS: (B, 1, F, T) → (B, 3, F, T)
         if self.hpss is not None:
@@ -506,6 +552,17 @@ class OnsetClassifier(nn.Module):
             lf_raw = self.spectral_extractor._extract(mel_lowfreq)  # (B, 11 or 14)
             lf_spectral_feat = self.lowfreq_spectral_proj(lf_raw)   # (B, spectral_dim)
             parts.append(lf_spectral_feat)
+
+        # V19: Crash-band spectral flux
+        if self.crash_flux_encoder is not None:
+            if crash_flux is not None:
+                crash_flux_feat = self.crash_flux_encoder(crash_flux)  # (B, crash_flux_dim)
+            else:
+                # Zero-pad so fused_dim stays consistent when flux unavailable
+                crash_flux_feat = torch.zeros(
+                    mel_fine.shape[0], self.crash_flux_encoder.out_dim,
+                    device=mel_fine.device, dtype=mel_fine.dtype)
+            parts.append(crash_flux_feat)
 
         fused = torch.cat(parts, dim=1)
 
