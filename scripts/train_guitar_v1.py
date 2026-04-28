@@ -42,6 +42,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.models.guitar_v1 import (    # noqa: E402
@@ -251,7 +252,9 @@ def train_onset(cfg: dict, args: argparse.Namespace) -> Path:
         t0 = time.time()
         running = 0.0
         n_batch = 0
-        for x, y in train_loader:
+        pbar = tqdm(train_loader, desc=f"onset ep{epoch}", leave=False,
+                    mininterval=2.0, dynamic_ncols=True)
+        for x, y in pbar:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             optim.zero_grad(set_to_none=True)
@@ -271,6 +274,10 @@ def train_onset(cfg: dict, args: argparse.Namespace) -> Path:
             sched.step()
             running += loss.item()
             n_batch += 1
+            if n_batch % 50 == 0:
+                pbar.set_postfix(loss=f"{running/n_batch:.4f}",
+                                 lr=f"{optim.param_groups[0]['lr']:.2e}")
+        pbar.close()
         train_loss = running / max(n_batch, 1)
         val_m = evaluate_onset(model, val_loader, device,
                                threshold=cfg["onset"]["inference"]["peak_threshold"])
@@ -399,7 +406,9 @@ def train_fret(cfg: dict, args: argparse.Namespace) -> Path:
         t0 = time.time()
         running = 0.0
         n_batch = 0
-        for x, y, c in train_loader:
+        pbar = tqdm(train_loader, desc=f"fret ep{epoch}", leave=False,
+                    mininterval=2.0, dynamic_ncols=True)
+        for x, y, c in pbar:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             c = c.to(device, non_blocking=True).unsqueeze(-1)
@@ -423,6 +432,10 @@ def train_fret(cfg: dict, args: argparse.Namespace) -> Path:
             sched.step()
             running += loss.item()
             n_batch += 1
+            if n_batch % 100 == 0:
+                pbar.set_postfix(loss=f"{running/n_batch:.4f}",
+                                 lr=f"{optim.param_groups[0]['lr']:.2e}")
+        pbar.close()
         train_loss = running / max(n_batch, 1)
         val_m = evaluate_fret(model, val_loader, device)
         epoch_time = time.time() - t0

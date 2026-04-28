@@ -45,17 +45,17 @@ onset:
     pos_focal_gamma:   2.0
 
   train:
-    batch_size:      32
+    batch_size:      128            # GB10 has 128 GB unified memory
     accumulation_steps: 1
     epochs:          25
-    learning_rate:   0.001
+    learning_rate:   0.002          # scaled with 4× batch size
     min_lr:          0.00001
     weight_decay:    0.0001
     warmup_epochs:   1
     gradient_clip:   1.0
     spec_augment_freq: 16            # mask up to 16 mel bins
     spec_augment_time: 32            # mask up to 32 frames
-    num_workers:     6
+    num_workers:     8
     pin_memory:      true
     early_stop_patience: 5
 
