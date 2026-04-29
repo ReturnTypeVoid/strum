@@ -40,7 +40,7 @@ onset:
   data:
     seg_frames:        216           # 5.0 s @ 23.22 ms/frame
     onset_smear_frames: 1            # match preprocessing
-    pos_weight:        20.0          # ~5% of frames are positive
+    pos_weight:        3.0           # focal already handles imbalance — gentle additional boost
     pos_focal_alpha:   0.25          # focal loss
     pos_focal_gamma:   2.0
 
@@ -48,13 +48,13 @@ onset:
     batch_size:      128            # GB10 has 128 GB unified memory
     accumulation_steps: 1
     epochs:          25
-    learning_rate:   0.002          # scaled with 4× batch size
+    learning_rate:   0.0005         # 5e-4: prev 2e-3 caused loss bounce after ep3
     min_lr:          0.00001
     weight_decay:    0.0001
     warmup_epochs:   1
     gradient_clip:   1.0
-    spec_augment_freq: 16            # mask up to 16 mel bins
-    spec_augment_time: 32            # mask up to 32 frames
+    spec_augment_freq: 8             # was 16 — too aggressive, hurt val convergence
+    spec_augment_time: 16            # was 32
     num_workers:     8
     pin_memory:      true
     early_stop_patience: 5
