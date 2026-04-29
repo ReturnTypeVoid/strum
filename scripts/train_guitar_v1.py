@@ -193,7 +193,8 @@ def evaluate_onset(model: nn.Module, loader: DataLoader, device: str,
 
 def train_onset(cfg: dict, args: argparse.Namespace) -> Path:
     cache_dir = Path(cfg["paths"]["cache_dir"])
-    ckpt_dir = Path(cfg["paths"]["checkpoint_dir"]) / "guitar_v1_onset"
+    onset_subdir = cfg["paths"].get("onset_subdir", "guitar_v1_onset")
+    ckpt_dir = Path(cfg["paths"]["checkpoint_dir"]) / onset_subdir
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     o = cfg["onset"]
@@ -345,7 +346,8 @@ def evaluate_fret(model: nn.Module, loader: DataLoader, device: str,
 
 def train_fret(cfg: dict, args: argparse.Namespace) -> Path:
     cache_dir = Path(cfg["paths"]["cache_dir"])
-    ckpt_dir = Path(cfg["paths"]["checkpoint_dir"]) / "guitar_v1_fret"
+    fret_subdir = cfg["paths"].get("fret_subdir", "guitar_v1_fret")
+    ckpt_dir = Path(cfg["paths"]["checkpoint_dir"]) / fret_subdir
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     fcfg = cfg["fret"]

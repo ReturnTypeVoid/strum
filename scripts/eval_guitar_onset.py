@@ -172,9 +172,13 @@ def main() -> int:
                 probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
                 all_probs.append(probs)
 
-                # Re-parse GT onset times from notes.mid
+                # Re-parse GT onset times from notes.mid, applying the
+                # per-song audio_offset_ms shift if the manifest carries one.
                 events = pgw.parse_onsets_from_manifest(Path(s["midi_path"]))
-                gt_times = np.array([t / 1000.0 for (t, _frets) in events])
+                offset_ms = float(s.get("audio_offset_ms", 0) or 0)
+                gt_times = np.array([(t - offset_ms) / 1000.0
+                                     for (t, _frets) in events])
+                gt_times = gt_times[gt_times >= 0]
                 all_gt.append(gt_times)
             except Exception as exc:
                 print(f"  [skip] {s['id']}: {exc}")
