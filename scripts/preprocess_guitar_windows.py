@@ -249,6 +249,18 @@ def phase1(songs: list[dict]) -> tuple[list[dict], int, int]:
             skipped += 1
             continue
 
+        # Apply per-song MIDI/audio alignment offset (if present in manifest).
+        # `audio_offset_ms` is the shift that, when ADDED to predicted onset
+        # times, aligns them with the GT. Equivalently, to align GT to audio
+        # we SUBTRACT it from MIDI event times.
+        offset_ms = float(song.get("audio_offset_ms", 0) or 0)
+        if offset_ms != 0.0:
+            onsets = [(tms - offset_ms, frets) for (tms, frets) in onsets
+                      if (tms - offset_ms) >= 0]
+            if not onsets:
+                skipped += 1
+                continue
+
         n_seg = count_segments(audio_len)
         n_win = count_valid_windows(onsets, audio_len)
         if n_seg == 0 and n_win == 0:
