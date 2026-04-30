@@ -622,9 +622,10 @@ class BatchPipeline:
         Backend selection (env STRUM_GUITAR_BACKEND, default 'hybrid'):
           * 'hybrid' (default): V2 onset CRNN (F1 0.81) + basic-pitch
             polyphonic pitch transcription + rule-based pitch→fret. Sidesteps
-            the weak V2 fret head (Event F1 0.17). Runs on the full mix.
-          * 'neural': V2 onset CRNN + V2 fret classifier. Faster but worse
-            fret accuracy.
+            the weak V2 fret head (Event F1 0.17). Runs on the htdemucs_6s
+            guitar stem so basic-pitch transcribes only guitar pitches and
+            the onset CRNN doesn't fire on vocals/drums.
+          * 'neural': V2 onset CRNN + V2 fret classifier (full mix).
           * 'rule': legacy librosa+pYIN+rule on the Demucs other stem.
         """
         if not self.include_guitar:
@@ -636,10 +637,14 @@ class BatchPipeline:
         if _os_g.environ.get("STRUM_GUITAR_RULE", "0") == "1":
             backend = "rule"
 
-        if backend == "rule" or full_mix is None:
-            src_path = other_stem
-        else:
+        # Source selection per backend:
+        #   hybrid → guitar stem (clean signal for basic-pitch + onset model)
+        #   neural → full mix (model trained on full mix)
+        #   rule   → other stem (legacy)
+        if backend == "neural" and full_mix is not None:
             src_path = full_mix
+        else:
+            src_path = other_stem  # hybrid uses the passed-in guitar stem
         logger.info(f"  Transcribing guitar ({backend}, src={src_path.name})...")
 
         try:
