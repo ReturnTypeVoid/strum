@@ -881,8 +881,9 @@ class BatchPipeline:
         return track
     
     def _create_guitar_track(self, chart, name: str, ticks_per_beat: int) -> mido.MidiTrack:
-        """Create guitar/bass track with all difficulties."""
+        """Create guitar/bass track with all difficulties + C3 rule enforcement."""
         from src.inference.guitar_bass import reduce_to_difficulty, FRET_NOTE_OFFSETS, GuitarNote
+        from src.inference.c3_rules import GuitarEvent as C3Event, apply_c3_rules
         
         track = mido.MidiTrack()
         track.append(mido.MetaMessage('track_name', name=name, time=0))
@@ -895,45 +896,35 @@ class BatchPipeline:
             diff_chart = reduce_to_difficulty(chart, difficulty)
             note_offset = FRET_NOTE_OFFSETS[difficulty]
             
-            # Flatten chords into per-fret notes so they actually export
-            # (previously chart.chords were silently dropped, causing
-            # 30-50% undercharting on chord-heavy songs).
-            flat_notes = list(diff_chart.notes)
-            for chord in diff_chart.chords:
-                for f in chord.frets:
-                    # Lower difficulties cap fret range
-                    max_fret = 3 if difficulty in ("hard", "medium") else (
-                        2 if difficulty == "easy" else 4)
-                    if f > max_fret:
-                        continue
-                    flat_notes.append(GuitarNote(
-                        time_ms=chord.time_ms,
-                        fret=f,
-                        duration_ms=getattr(chord, "duration_ms", 100.0),
-                        velocity=chord.velocity,
-                        is_chord=True,
-                    ))
-            flat_notes.sort(key=lambda n: (n.time_ms, n.fret))
-            
-            # Truncate sustains so consecutive same-fret notes don't merge
-            # in the game (overlapping note_on on same pitch == one held note).
-            min_gap_ms = 30.0
-            by_fret: dict[int, GuitarNote] = {}
-            for n in flat_notes:
-                prev = by_fret.get(n.fret)
-                if prev is not None:
-                    max_end_ms = n.time_ms - min_gap_ms
-                    if prev.time_ms + prev.duration_ms > max_end_ms:
-                        prev.duration_ms = max(20.0, max_end_ms - prev.time_ms)
-                by_fret[n.fret] = n
-            
-            for note in flat_notes:
-                start_tick = int(note.time_ms / ms_per_tick)
-                duration_ticks = max(int(note.duration_ms / ms_per_tick), ticks_per_beat // 8)
-                midi_note = note_offset + note.fret
-                
-                events.append(("on", start_tick, midi_note, note.velocity))
-                events.append(("off", start_tick + duration_ticks, midi_note, 0))
+            # Group notes + chords into per-onset C3Events for rule pass
+            buckets: dict[float, C3Event] = {}
+            def _add(t_ms: float, fret: int, dur_ms: float, vel: int):
+                k = round(t_ms, 1)
+                if k not in buckets:
+                    buckets[k] = C3Event(time_ms=t_ms, frets=[fret],
+                                         duration_ms=dur_ms, velocity=vel)
+                else:
+                    if fret not in buckets[k].frets:
+                        buckets[k].frets.append(fret)
+                    buckets[k].duration_ms = max(buckets[k].duration_ms, dur_ms)
+
+            for n in diff_chart.notes:
+                _add(n.time_ms, int(n.fret), float(n.duration_ms), int(n.velocity))
+            for c in diff_chart.chords:
+                for f in c.frets:
+                    _add(c.time_ms, int(f), float(c.duration_ms), int(c.velocity))
+
+            c3_events = apply_c3_rules(
+                list(buckets.values()), tempo_bpm, difficulty,
+            )
+
+            for ev in c3_events:
+                start_tick = int(ev.time_ms / ms_per_tick)
+                duration_ticks = max(int(ev.duration_ms / ms_per_tick), ticks_per_beat // 16)
+                for f in ev.frets:
+                    midi_note = note_offset + f
+                    events.append(("on", start_tick, midi_note, ev.velocity))
+                    events.append(("off", start_tick + duration_ticks, midi_note, 0))
         
         # off-before-on at the same tick to avoid same-pitch off cancelling a fresh on
         events.sort(key=lambda e: (e[1], 0 if e[0] == "off" else 1))
