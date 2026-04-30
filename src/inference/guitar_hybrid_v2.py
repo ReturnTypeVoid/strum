@@ -222,25 +222,30 @@ def snap_pitches_to_onsets(
 def filter_dominant_voice(
     buckets: list[list[PitchNote]],
     all_notes: list[PitchNote],
-    lead_percentile: float = 65.0,
-    lead_min_fraction: float = 0.05,
-    lead_separation_semitones: int = 5,
+    lead_percentile: float = 80.0,
+    lead_min_fraction: float = 0.08,
+    lead_separation_semitones: int = 7,
+    lead_amp_ratio: float = 1.2,
     max_lead_notes: int = 2,
 ) -> list[list[PitchNote]]:
     """Pick the perceptually-dominant voice at each onset.
 
-    Strategy:
-      * Compute song-wide lead-register threshold (percentile of pitch).
-      * If <lead_min_fraction of the song is in lead register → no lead voice;
-        return buckets unchanged (pure rhythm song).
-      * For each onset bucket:
-          - If any note ≥ lead_threshold AND it sits ≥ lead_separation_semitones
-            above the next-highest non-lead note → lead overdub, chart ONLY
-            the top max_lead_notes lead notes (drop rhythm bleed).
-          - Else → keep the bucket as-is (chord / single rhythm note).
+    Tuned conservatively: only collapses to lead when there's CLEAR evidence
+    of a true lead overdub (high pitch, large pitch gap, comparable amplitude
+    to rhythm). Otherwise the chord/rhythm bucket is kept intact so chord
+    density isn't destroyed.
 
-    This makes the chart follow lead lines/solos when present and rhythm
-    chords when there's no lead, matching listener expectation.
+    Strategy:
+      * lead_threshold = song-wide 80th percentile pitch.
+      * If <8% of notes are in lead register → no lead voice; pass through.
+      * For each onset bucket:
+          - lead_notes = bucket notes ≥ lead_threshold
+          - rhythm_notes = bucket notes < lead_threshold
+          - Only pick lead IF: top_lead ≥ top_rhythm + 7 semitones AND
+            top_lead amplitude ≥ lead_amp_ratio × max(rhythm amplitudes).
+            This rules out simple chord voicings whose top note happens to
+            sit in the lead register.
+          - Else pass the full bucket through (preserve chords).
     """
     if not all_notes:
         return buckets
@@ -260,19 +265,19 @@ def filter_dominant_voice(
             key=lambda n: -n.midi,
         )
         rhythm_notes = [n for n in bucket if n.midi < lead_threshold]
-        if not lead_notes:
+        if not lead_notes or not rhythm_notes:
             out.append(bucket)
             continue
-        # Require clear separation: top lead pitch must be ≥ N semitones
-        # above the highest rhythm pitch (otherwise it's just a chord voicing
-        # that happens to extend into the lead register).
-        if rhythm_notes:
-            top_lead = lead_notes[0].midi
-            top_rhythm = max(n.midi for n in rhythm_notes)
-            if (top_lead - top_rhythm) < lead_separation_semitones:
-                out.append(bucket)
-                continue
-        out.append(lead_notes[:max_lead_notes])
+        top_lead = lead_notes[0]
+        top_rhythm_midi = max(n.midi for n in rhythm_notes)
+        max_rhythm_amp = max(n.amplitude for n in rhythm_notes)
+        # Both gates must pass
+        pitch_gap_ok = (top_lead.midi - top_rhythm_midi) >= lead_separation_semitones
+        amp_ok = top_lead.amplitude >= lead_amp_ratio * max_rhythm_amp
+        if pitch_gap_ok and amp_ok:
+            out.append(lead_notes[:max_lead_notes])
+        else:
+            out.append(bucket)
     return out
 
 
@@ -305,7 +310,20 @@ class GuitarHybridV2Charter:
 
     # ─── Stage 1: V2 onset CRNN ────────────────────────────────────────────
     @torch.inference_mode()
-    def detect_onsets(self, audio: np.ndarray, threshold: float | None = None) -> np.ndarray:
+    def detect_onsets(
+        self,
+        audio: np.ndarray,
+        threshold: float | None = None,
+        latency_offset_s: float = 0.025,
+    ) -> np.ndarray:
+        """Detect onsets and apply attack-latency correction.
+
+        Mel-spectrogram CNNs detect at the energy peak which lags the actual
+        attack transient by ~20-30ms (one mel frame at hop=512/22050). We
+        subtract `latency_offset_s` so events line up with note attacks in
+        playback (matches drum/vocal pipelines which use librosa onset_strength
+        + per-attack refinement).
+        """
         thr = threshold if threshold is not None else self.default_onset_thr
         log_mel = pgw.compute_log_mel(audio)                   # (M, T)
         x = log_mel.unsqueeze(0).unsqueeze(0).to(self.device)  # (1,1,M,T)
@@ -314,7 +332,8 @@ class GuitarHybridV2Charter:
         from src.inference.guitar_neural import GuitarNeuralCharter
         peaks = GuitarNeuralCharter.peak_pick(probs, thr, self.default_min_dist_frames)
         frame_s = pgw.HOP_LENGTH / pgw.SAMPLE_RATE
-        return peaks * frame_s
+        times = peaks * frame_s - latency_offset_s
+        return np.clip(times, 0.0, None)
 
     # ─── Full pipeline ─────────────────────────────────────────────────────
     def transcribe(
@@ -324,7 +343,7 @@ class GuitarHybridV2Charter:
         onset_threshold: float | None = None,
         snap_window_s: float = 0.075,
         min_pitch_amplitude: float = 0.3,
-        sustain_min_duration_s: float = 0.25,
+        sustain_min_duration_s: float = 0.15,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
 
