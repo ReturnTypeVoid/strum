@@ -89,7 +89,9 @@ def transcribe_guitar(
 
     # Auto-detect tempo if not provided
     if tempo_bpm <= 0:
-        tempo_arr = librosa.feature.rhythm.tempo(y=y, sr=sr)
+        # librosa 0.11 removed feature.rhythm; tempo lives at librosa.beat.tempo.
+        tempo_fn = getattr(librosa.beat, "tempo", None) or librosa.feature.rhythm.tempo
+        tempo_arr = tempo_fn(y=y, sr=sr)
         tempo_bpm = float(tempo_arr[0]) if hasattr(tempo_arr, '__len__') else float(tempo_arr)
         logger.info(f"Auto-detected tempo: {tempo_bpm:.1f} BPM")
 
@@ -212,36 +214,50 @@ def _detect_onsets(
 
     # --- Section router (load once, used to gate onsets per region) ---
     # Bass uses fewer sections; only gate guitar with the router for now.
+    # Disable entirely with STRUM_GB_USE_ROUTER=0.
+    # Router val_acc is ~0.59 — apply rules ONLY when window prob > confidence
+    # threshold (default 0.55). Otherwise, treat as 'mixed' (no special rule).
+    import os as _os
     sections = None
-    if not is_bass:
+    router_conf_th = float(_os.environ.get("STRUM_GB_ROUTER_CONF", "0.55"))
+    if not is_bass and _os.environ.get("STRUM_GB_USE_ROUTER", "1") != "0":
         try:
             from src.inference.section_router import get_router  # local import
+            from src.inference.section_router import LABELS as _ROUTER_LABELS
             router = get_router()
             if router is not None:
                 sections = router.predict(y, sr)
                 if sections:
                     from collections import Counter
                     counts = Counter(s.label for s in sections)
-                    logger.info(f"Section router: {dict(counts)}")
+                    logger.info(f"Section router: {dict(counts)} (conf_th={router_conf_th})")
         except Exception as exc:
             logger.warning(f"Section router unavailable: {exc}")
             sections = None
 
     def _label_at(t: float) -> str:
+        """Return the section label at time t, but only if its confidence
+        exceeds router_conf_th. Otherwise return 'mixed' (no special rule)."""
         if not sections:
             return "mixed"
         for sec in sections:
             if sec.t_start_s <= t < sec.t_end_s:
-                return sec.label
-        return sections[-1].label if sections else "mixed"
+                if float(sec.probs.max()) >= router_conf_th:
+                    return sec.label
+                return "mixed"
+        return "mixed"
 
     # --- Spectral onset peaks ---
     oenv = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
     oenv_norm = oenv / (oenv.max() + 1e-8)
 
-    # Height threshold: 0.07 gives ~4-5 nps for rock guitar.
-    # `threshold` arg scales the height (1.0 = default, higher = fewer notes).
-    base = 0.07 if not is_bass else 0.10
+    # Height threshold. Original 0.07 was right; the over-charting came from
+    # the grid-fill not the peak detector. Strict-grid filter below now drops
+    # grid notes without peak support, which is the real density fix.
+    # Tunable via STRUM_GB_PEAK_HEIGHT.
+    import os as _os_h
+    base_default = 0.07 if not is_bass else 0.10
+    base = float(_os_h.environ.get("STRUM_GB_PEAK_HEIGHT", str(base_default)))
     ref = 0.3 if not is_bass else 0.4
     peak_height = base * (max(threshold, 0.05) / ref)
     peaks, _ = find_peaks(oenv_norm, height=peak_height, distance=2)
@@ -282,28 +298,30 @@ def _detect_onsets(
     oenv_high = np.percentile(oenv_smooth, 70)
 
     filtered_grid = []
+    # Density-conscious grid placement:
+    # Only add grid notes that ALSO co-occur with an onset peak (within 30ms),
+    # OR are in confidently constant-strum sections. This stops the grid from
+    # synthesizing notes that aren't actually played.
+    # Disable strict mode with STRUM_GB_LOOSE_GRID=1 (revert to old behavior).
+    loose_grid = _os_h.environ.get("STRUM_GB_LOOSE_GRID", "0") == "1"
+    peak_set = peak_times if len(peak_times) > 0 else np.array([0.0])
     for t in grid_times:
         idx = np.argmin(np.abs(rms_times - t))
         if idx < len(rms) and rms[idx] > energy_floor:
             label = _label_at(t)
-            # Section-aware grid placement:
-            #   - silence: drop the grid note entirely
-            #   - constant_strum: keep + add 16th
-            #   - chord_stab / single_notes: keep only beat (no 8th subdivision)
             if label == "silence":
                 continue
-            if label in ("chord_stab", "single_notes"):
-                # Keep only if this is on a beat (within 30ms of one)
-                if not any(abs(t - bt) < 0.03 for bt in beat_times):
+            # Strict mode: grid note must coincide with an actual peak, OR
+            # the section router is confidently calling constant_strum.
+            if not loose_grid and label != "constant_strum":
+                nearest_peak = np.min(np.abs(peak_set - t))
+                if nearest_peak > 0.060:
                     continue
             filtered_grid.append(t)
 
-            # In high-energy sections, also add 16th note subdivisions
-            oenv_idx = np.argmin(np.abs(rms_times - t))
-            high_energy = oenv_idx < len(oenv_smooth) and oenv_smooth[oenv_idx] > oenv_high
-            # Section router can force or suppress 16ths.
-            if not is_bass and (label == "constant_strum" or high_energy) and label != "silence":
-                # Add 16th note between this 8th and the next
+            # 16ths only in confident constant_strum sections (no high_energy
+            # heuristic — it doubled density without improving F1).
+            if not is_bass and label == "constant_strum":
                 sixteenth = t + beat_sec * 0.25
                 sixteenth_idx = np.argmin(np.abs(rms_times - sixteenth))
                 if sixteenth_idx < len(rms) and rms[sixteenth_idx] > energy_floor:
@@ -311,7 +329,8 @@ def _detect_onsets(
 
     filtered_grid = np.array(sorted(filtered_grid)) if filtered_grid else np.array([])
 
-    # Section-aware peak filtering: drop spectral peaks during 'silence' sections
+    # Section-aware peak filtering: drop spectral peaks during high-confidence
+    # 'silence' sections only (peaks already gated by find_peaks height too).
     if sections:
         keep = np.array([_label_at(t) != "silence" for t in peak_times])
         peak_times = peak_times[keep]
@@ -697,33 +716,40 @@ def _detect_chords(
         if frame < len(bandwidth):
             onset_bandwidths[i] = bandwidth[frame]
 
-    # Lowered thresholds + OR logic + raised cap.
-    # Old: top-30%-AND with 25% cap was deeply chord-shy on power-chord rock
-    # (the AND intersection is small; cap clipped the rest). New: top-50% on
-    # EITHER strength or bandwidth, capped at 60%. Tunable via env vars.
+    # Signal-driven chord detection.
+    # Diagnostic on 8 val songs (Apr 2026) showed pred chord rate was a flat
+    # 27% regardless of song style, while GT chord rate ranges 18% (lead-heavy)
+    # to 74% (acoustic strumming). Old algorithm capped at top-N percentile so
+    # output was uniform. New: per-onset chord score from signed deviation of
+    # bandwidth/strength vs the song's own median; chord if score > threshold.
+    # No cap — if 70% of onsets are wide-spectrum strums, all 70% become chords.
     import os as _os_chord
     if len(onset_strengths) > 4:
-        strength_pct = float(_os_chord.environ.get("STRUM_GB_CHORD_STRENGTH_PCT", "50"))
-        bw_pct = float(_os_chord.environ.get("STRUM_GB_CHORD_BW_PCT", "50"))
-        max_chord_frac = float(_os_chord.environ.get("STRUM_GB_CHORD_MAX_FRAC", "0.60"))
-        strength_thresh = np.percentile(onset_strengths, strength_pct)
-        bw_thresh = np.percentile(onset_bandwidths, bw_pct)
+        chord_score_th = float(_os_chord.environ.get("STRUM_GB_CHORD_SCORE", "1.0"))
+        # Optional hard cap (default disabled at 1.0 = no cap).
+        max_chord_frac = float(_os_chord.environ.get("STRUM_GB_CHORD_MAX_FRAC", "1.0"))
 
-        # Score each onset by how chord-like it looks; mark top max_chord_frac.
-        chord_score = np.zeros(len(onset_times))
-        for i in range(len(onset_times)):
-            s_norm = onset_strengths[i] / (strength_thresh + 1e-8)
-            b_norm = onset_bandwidths[i] / (bw_thresh + 1e-8)
-            if onset_strengths[i] >= strength_thresh or onset_bandwidths[i] >= bw_thresh:
-                # Sum of normalized features as a soft chord-likeness score.
-                chord_score[i] = s_norm + b_norm
+        bw_med = np.median(onset_bandwidths)
+        bw_mad = np.median(np.abs(onset_bandwidths - bw_med)) + 1e-8
+        s_med = np.median(onset_strengths)
+        s_mad = np.median(np.abs(onset_strengths - s_med)) + 1e-8
 
-        max_chords = int(len(onset_times) * max_chord_frac)
-        if max_chords > 0:
-            top_idx = np.argsort(chord_score)[::-1][:max_chords]
-            for i in top_idx:
-                if chord_score[i] > 0:
-                    chord_mask[i] = True
+        # z-like score: how much wider/stronger than this song's baseline.
+        bw_z = (onset_bandwidths - bw_med) / bw_mad
+        s_z = (onset_strengths - s_med) / s_mad
+
+        # Bandwidth dominates (chord shape); strength contributes half-weight.
+        chord_score = bw_z + 0.5 * s_z
+
+        if max_chord_frac < 1.0:
+            max_chords = int(len(onset_times) * max_chord_frac)
+            if max_chords > 0:
+                top_idx = np.argsort(chord_score)[::-1][:max_chords]
+                for i in top_idx:
+                    if chord_score[i] > chord_score_th:
+                        chord_mask[i] = True
+        else:
+            chord_mask = chord_score > chord_score_th
 
     logger.info(f"Detected {chord_mask.sum()} chords ({100*chord_mask.mean():.1f}%)")
     return chord_mask
