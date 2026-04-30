@@ -121,6 +121,32 @@ def transcribe_guitar(
     valid_ratio = (onset_pitches > 0).mean()
     logger.info(f"Valid pitches: {(onset_pitches > 0).sum()}/{len(onset_pitches)} ({valid_ratio*100:.1f}%)")
 
+    # --- Stage 3b: Suppress sustain artifacts ---
+    # The beat-grid onset pass fires 8th/16th-note onsets anywhere RMS > floor,
+    # which over-charts when a previous note is still ringing. Drop any onset
+    # whose pitch matches the prior onset within ~1 semitone AND falls inside
+    # an 8th-note window of the prior onset — that's a held note, not a new strum.
+    import os as _os_sus
+    if _os_sus.environ.get("STRUM_GB_NO_SUSTAIN_MERGE", "0") != "1":
+        beat_sec = 60.0 / tempo_bpm
+        merge_window = beat_sec * 0.5  # 8th note
+        keep = np.ones(len(onset_times), dtype=bool)
+        last_kept = 0
+        for i in range(1, len(onset_times)):
+            gap = onset_times[i] - onset_times[last_kept]
+            p_now = onset_pitches[i]
+            p_prev = onset_pitches[last_kept]
+            same_pitch = (p_now > 0 and p_prev > 0 and abs(p_now - p_prev) < 1.0)
+            if same_pitch and gap < merge_window:
+                keep[i] = False  # phantom from beat-grid during ringing note
+            else:
+                last_kept = i
+        n_dropped = int((~keep).sum())
+        if n_dropped > 0:
+            onset_times = onset_times[keep]
+            onset_pitches = onset_pitches[keep]
+            logger.info(f"Suppressed {n_dropped} sustain-artifact onsets ({len(onset_times)} kept)")
+
     # --- Stage 4: Fret assignment ---
     frets = _assign_frets(onset_pitches, onset_times, is_bass)
 
@@ -550,9 +576,11 @@ def _detect_durations(
         else:
             gap_to_next = 4.0
 
-        # In dense passages (< 300ms gap), use short duration
-        if gap_to_next < 0.3:
-            durations[i] = min(gap_to_next * 0.7, 0.15)
+        # In very dense passages (< 180ms gap), use short duration.
+        # Lowered from 300ms — at 300ms a note ringing through an 8th-note
+        # rest at 100 BPM gets clipped to a tap, losing real sustains.
+        if gap_to_next < 0.18:
+            durations[i] = min(gap_to_next * 0.7, 0.12)
             continue
 
         # Find onset energy
@@ -624,20 +652,33 @@ def _detect_chords(
         if frame < len(bandwidth):
             onset_bandwidths[i] = bandwidth[frame]
 
-    # Thresholds: top 30% of both strength and bandwidth
+    # Lowered thresholds + OR logic + raised cap.
+    # Old: top-30%-AND with 25% cap was deeply chord-shy on power-chord rock
+    # (the AND intersection is small; cap clipped the rest). New: top-50% on
+    # EITHER strength or bandwidth, capped at 60%. Tunable via env vars.
+    import os as _os_chord
     if len(onset_strengths) > 4:
-        strength_thresh = np.percentile(onset_strengths, 70)
-        bw_thresh = np.percentile(onset_bandwidths, 70)
+        strength_pct = float(_os_chord.environ.get("STRUM_GB_CHORD_STRENGTH_PCT", "50"))
+        bw_pct = float(_os_chord.environ.get("STRUM_GB_CHORD_BW_PCT", "50"))
+        max_chord_frac = float(_os_chord.environ.get("STRUM_GB_CHORD_MAX_FRAC", "0.60"))
+        strength_thresh = np.percentile(onset_strengths, strength_pct)
+        bw_thresh = np.percentile(onset_bandwidths, bw_pct)
 
-        n_chords = 0
-        max_chords = len(onset_times) // 4  # Cap at 25%
-
+        # Score each onset by how chord-like it looks; mark top max_chord_frac.
+        chord_score = np.zeros(len(onset_times))
         for i in range(len(onset_times)):
-            if n_chords >= max_chords:
-                break
-            if onset_strengths[i] >= strength_thresh and onset_bandwidths[i] >= bw_thresh:
-                chord_mask[i] = True
-                n_chords += 1
+            s_norm = onset_strengths[i] / (strength_thresh + 1e-8)
+            b_norm = onset_bandwidths[i] / (bw_thresh + 1e-8)
+            if onset_strengths[i] >= strength_thresh or onset_bandwidths[i] >= bw_thresh:
+                # Sum of normalized features as a soft chord-likeness score.
+                chord_score[i] = s_norm + b_norm
+
+        max_chords = int(len(onset_times) * max_chord_frac)
+        if max_chords > 0:
+            top_idx = np.argsort(chord_score)[::-1][:max_chords]
+            for i in top_idx:
+                if chord_score[i] > 0:
+                    chord_mask[i] = True
 
     logger.info(f"Detected {chord_mask.sum()} chords ({100*chord_mask.mean():.1f}%)")
     return chord_mask
