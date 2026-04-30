@@ -194,19 +194,46 @@ def _detect_onsets(
     is_bass: bool,
 ) -> np.ndarray:
     """
-    Hybrid onset detection: spectral peaks + beat-grid rhythm.
+    Hybrid onset detection: spectral peaks + beat-grid rhythm + section router.
 
     Pure onset detection misses many guitar strums because rhythm guitar
     plays at consistent energy (no clear transient peaks). This hybrid
     approach combines:
     1. Spectral onset peaks — catches leads, accents, fills
     2. Beat-grid placement — catches rhythmic strumming
+    3. Section router — switches strategy per ~1s window so constant-strum
+       sections lock to the grid, silence sections drop all onsets, etc.
 
     Both are energy-gated to avoid placing notes during silence.
     """
     from scipy.signal import find_peaks
 
     duration = len(y) / sr
+
+    # --- Section router (load once, used to gate onsets per region) ---
+    # Bass uses fewer sections; only gate guitar with the router for now.
+    sections = None
+    if not is_bass:
+        try:
+            from src.inference.section_router import get_router  # local import
+            router = get_router()
+            if router is not None:
+                sections = router.predict(y, sr)
+                if sections:
+                    from collections import Counter
+                    counts = Counter(s.label for s in sections)
+                    logger.info(f"Section router: {dict(counts)}")
+        except Exception as exc:
+            logger.warning(f"Section router unavailable: {exc}")
+            sections = None
+
+    def _label_at(t: float) -> str:
+        if not sections:
+            return "mixed"
+        for sec in sections:
+            if sec.t_start_s <= t < sec.t_end_s:
+                return sec.label
+        return sections[-1].label if sections else "mixed"
 
     # --- Spectral onset peaks ---
     oenv = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
@@ -258,11 +285,24 @@ def _detect_onsets(
     for t in grid_times:
         idx = np.argmin(np.abs(rms_times - t))
         if idx < len(rms) and rms[idx] > energy_floor:
+            label = _label_at(t)
+            # Section-aware grid placement:
+            #   - silence: drop the grid note entirely
+            #   - constant_strum: keep + add 16th
+            #   - chord_stab / single_notes: keep only beat (no 8th subdivision)
+            if label == "silence":
+                continue
+            if label in ("chord_stab", "single_notes"):
+                # Keep only if this is on a beat (within 30ms of one)
+                if not any(abs(t - bt) < 0.03 for bt in beat_times):
+                    continue
             filtered_grid.append(t)
 
             # In high-energy sections, also add 16th note subdivisions
             oenv_idx = np.argmin(np.abs(rms_times - t))
-            if oenv_idx < len(oenv_smooth) and oenv_smooth[oenv_idx] > oenv_high and not is_bass:
+            high_energy = oenv_idx < len(oenv_smooth) and oenv_smooth[oenv_idx] > oenv_high
+            # Section router can force or suppress 16ths.
+            if not is_bass and (label == "constant_strum" or high_energy) and label != "silence":
                 # Add 16th note between this 8th and the next
                 sixteenth = t + beat_sec * 0.25
                 sixteenth_idx = np.argmin(np.abs(rms_times - sixteenth))
@@ -270,6 +310,11 @@ def _detect_onsets(
                     filtered_grid.append(sixteenth)
 
     filtered_grid = np.array(sorted(filtered_grid)) if filtered_grid else np.array([])
+
+    # Section-aware peak filtering: drop spectral peaks during 'silence' sections
+    if sections:
+        keep = np.array([_label_at(t) != "silence" for t in peak_times])
+        peak_times = peak_times[keep]
 
     # --- Merge onset peaks + beat grid ---
     all_times = np.sort(np.concatenate([peak_times, filtered_grid]))
