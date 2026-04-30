@@ -646,30 +646,35 @@ class BatchPipeline:
             return None
     
     def transcribe_bass(self, bass_stem: Path, tempo_bpm: float, full_mix: Path | None = None):
-        """Transcribe bass using Basic Pitch + C3 authoring rules (no chords)."""
+        """Transcribe bass using the rule-based pipeline on the bass stem.
+
+        The neural V2 model was trained on guitar — running it on the full mix
+        for bass yields the *same* output as guitar (same model, same input).
+        Until a bass-specific model exists, bass stays on the rule-based
+        librosa+pYIN pipeline operating on Demucs's bass.wav stem.
+        STRUM_BASS_NEURAL=1 forces the (broken) neural path for A/B testing.
+        """
         if not self.include_bass:
             return None
 
-        # Bass uses the same neural model when STRUM_GUITAR_RULE!=1. The V2
-        # checkpoints were trained on guitar stems only — bass quality is
-        # unproven, but rule-based bass is the same family and equally weak.
-        # We strip multi-fret events to honor the "no chords" C3 convention.
-        # Neural model expects full mix, not Demucs stem.
         import os as _os_b
-        use_rule = _os_b.environ.get("STRUM_GUITAR_RULE", "0") == "1"
-        backend = "rule" if use_rule else "neural"
-        src_path = bass_stem if (use_rule or full_mix is None) else full_mix
+        force_neural = _os_b.environ.get("STRUM_BASS_NEURAL", "0") == "1"
+        if force_neural and full_mix is not None:
+            backend = "neural(forced, =guitar)"
+            src_path = full_mix
+        else:
+            backend = "rule"
+            src_path = bass_stem
         logger.info(f"  Transcribing bass ({backend}, src={src_path.name}, no chords per C3 rules)...")
 
         try:
-            if use_rule:
-                from src.inference.guitar_bass import transcribe_bass
-                chart = transcribe_bass(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
-            else:
+            if force_neural and full_mix is not None:
                 from src.inference.guitar_neural import transcribe_guitar_neural
                 chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm, is_bass=True)
-                # Bass charts are single-note only; drop any chord events.
                 chart.chords = []
+            else:
+                from src.inference.guitar_bass import transcribe_bass
+                chart = transcribe_bass(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
             logger.info(f"    Bass: {len(chart.notes)} notes (no chords per C3 rules)")
             return chart
         except Exception as e:
