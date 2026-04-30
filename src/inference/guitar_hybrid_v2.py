@@ -488,10 +488,16 @@ def transcribe_guitar_hybrid(
     )
     for ev in events:
         t_ms = ev.time_sec * 1000.0
+        sustain_s = float(getattr(ev, "__dict__", {}).get("sustain_duration_s", 0.0) or 0.0)
+        dur_ms = sustain_s * 1000.0 if sustain_s > 0 else 100.0
         if len(ev.frets) >= 2:
-            chart.chords.append(GuitarChord(time_ms=t_ms, frets=list(ev.frets)))
+            chart.chords.append(GuitarChord(
+                time_ms=t_ms, frets=list(ev.frets), duration_ms=dur_ms,
+            ))
         elif len(ev.frets) == 1:
-            chart.notes.append(GuitarNote(time_ms=t_ms, fret=int(ev.frets[0])))
+            chart.notes.append(GuitarNote(
+                time_ms=t_ms, fret=int(ev.frets[0]), duration_ms=dur_ms,
+            ))
     return chart
 
 
