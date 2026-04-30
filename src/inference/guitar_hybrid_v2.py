@@ -218,6 +218,64 @@ def snap_pitches_to_onsets(
     return buckets
 
 
+# ─────────────────────────── Dominant-voice filter ──────────────────────────
+def filter_dominant_voice(
+    buckets: list[list[PitchNote]],
+    all_notes: list[PitchNote],
+    lead_percentile: float = 65.0,
+    lead_min_fraction: float = 0.05,
+    lead_separation_semitones: int = 5,
+    max_lead_notes: int = 2,
+) -> list[list[PitchNote]]:
+    """Pick the perceptually-dominant voice at each onset.
+
+    Strategy:
+      * Compute song-wide lead-register threshold (percentile of pitch).
+      * If <lead_min_fraction of the song is in lead register → no lead voice;
+        return buckets unchanged (pure rhythm song).
+      * For each onset bucket:
+          - If any note ≥ lead_threshold AND it sits ≥ lead_separation_semitones
+            above the next-highest non-lead note → lead overdub, chart ONLY
+            the top max_lead_notes lead notes (drop rhythm bleed).
+          - Else → keep the bucket as-is (chord / single rhythm note).
+
+    This makes the chart follow lead lines/solos when present and rhythm
+    chords when there's no lead, matching listener expectation.
+    """
+    if not all_notes:
+        return buckets
+    arr = np.array([n.midi for n in all_notes], dtype=np.float32)
+    lead_threshold = float(np.percentile(arr, lead_percentile))
+    lead_fraction = float(np.mean(arr >= lead_threshold))
+    if lead_fraction < lead_min_fraction:
+        return buckets
+
+    out: list[list[PitchNote]] = []
+    for bucket in buckets:
+        if not bucket:
+            out.append(bucket)
+            continue
+        lead_notes = sorted(
+            [n for n in bucket if n.midi >= lead_threshold],
+            key=lambda n: -n.midi,
+        )
+        rhythm_notes = [n for n in bucket if n.midi < lead_threshold]
+        if not lead_notes:
+            out.append(bucket)
+            continue
+        # Require clear separation: top lead pitch must be ≥ N semitones
+        # above the highest rhythm pitch (otherwise it's just a chord voicing
+        # that happens to extend into the lead register).
+        if rhythm_notes:
+            top_lead = lead_notes[0].midi
+            top_rhythm = max(n.midi for n in rhythm_notes)
+            if (top_lead - top_rhythm) < lead_separation_semitones:
+                out.append(bucket)
+                continue
+        out.append(lead_notes[:max_lead_notes])
+    return out
+
+
 # ─────────────────────────── Main charter ───────────────────────────────────
 class GuitarHybridV2Charter:
     """V2 onset CRNN + basic-pitch + rule-based pitch→fret mapping."""
@@ -282,6 +340,13 @@ class GuitarHybridV2Charter:
 
         # Stage 3: snap
         buckets = snap_pitches_to_onsets(onset_times, notes, snap_window_s)
+
+        # Stage 3b: dominant-voice filter — at onsets where a lead overdub
+        # sits clearly above the rhythm chord, chart only the lead. Songs
+        # with no lead-register activity are passed through unchanged.
+        import os as _os
+        if _os.environ.get("STRUM_GUITAR_VOICE_FILTER", "1") == "1":
+            buckets = filter_dominant_voice(buckets, notes)
 
         # Stage 4: build mapper from all transcribed pitches
         mapper = PitchToFretMapper([n.midi for n in notes])
