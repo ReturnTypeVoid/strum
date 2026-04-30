@@ -616,35 +616,60 @@ class BatchPipeline:
             traceback.print_exc()
             return None
     
-    def transcribe_guitar(self, other_stem: Path, tempo_bpm: float):
+    def transcribe_guitar(self, other_stem: Path, tempo_bpm: float, full_mix: Path | None = None):
         """Transcribe guitar using Basic Pitch + C3 authoring rules."""
         if not self.include_guitar:
             return None
-        
-        logger.info("  Transcribing guitar (C3 rules)...")
-        
+
+        # Backend selection: neural V2 by default (val Event F1 0.170 vs
+        # rule-based 0.045 on the same eval harness). STRUM_GUITAR_RULE=1
+        # forces the legacy librosa+pYIN+rule-based pipeline.
+        # The neural model was trained on the FULL mix (song.ogg), not on
+        # Demucs stems, so we feed full_mix when available.
+        import os as _os_g
+        use_rule = _os_g.environ.get("STRUM_GUITAR_RULE", "0") == "1"
+        backend = "rule" if use_rule else "neural"
+        src_path = other_stem if (use_rule or full_mix is None) else full_mix
+        logger.info(f"  Transcribing guitar ({backend}, src={src_path.name})...")
+
         try:
-            from src.inference.guitar_bass import transcribe_guitar
-            # Lower threshold (0.3) allows more notes per C3 Expert rules
-            chart = transcribe_guitar(other_stem, tempo_bpm=tempo_bpm, confidence_threshold=0.3)
+            if use_rule:
+                from src.inference.guitar_bass import transcribe_guitar
+                chart = transcribe_guitar(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.3)
+            else:
+                from src.inference.guitar_neural import transcribe_guitar_neural
+                chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm)
             logger.info(f"    Guitar: {len(chart.notes)} notes + {len(chart.chords)} chords")
             return chart
         except Exception as e:
             logger.warning(f"  ⚠ Guitar transcription failed: {e}")
             return None
     
-    def transcribe_bass(self, bass_stem: Path, tempo_bpm: float):
+    def transcribe_bass(self, bass_stem: Path, tempo_bpm: float, full_mix: Path | None = None):
         """Transcribe bass using Basic Pitch + C3 authoring rules (no chords)."""
         if not self.include_bass:
             return None
-        
-        logger.info("  Transcribing bass (C3 rules, no chords)...")
-        
+
+        # Bass uses the same neural model when STRUM_GUITAR_RULE!=1. The V2
+        # checkpoints were trained on guitar stems only — bass quality is
+        # unproven, but rule-based bass is the same family and equally weak.
+        # We strip multi-fret events to honor the "no chords" C3 convention.
+        # Neural model expects full mix, not Demucs stem.
+        import os as _os_b
+        use_rule = _os_b.environ.get("STRUM_GUITAR_RULE", "0") == "1"
+        backend = "rule" if use_rule else "neural"
+        src_path = bass_stem if (use_rule or full_mix is None) else full_mix
+        logger.info(f"  Transcribing bass ({backend}, src={src_path.name}, no chords per C3 rules)...")
+
         try:
-            from src.inference.guitar_bass import transcribe_bass
-            # Slightly higher threshold (0.4) for bass clarity
-            # Bass charts don't use chords per C3 rules
-            chart = transcribe_bass(bass_stem, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
+            if use_rule:
+                from src.inference.guitar_bass import transcribe_bass
+                chart = transcribe_bass(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
+            else:
+                from src.inference.guitar_neural import transcribe_guitar_neural
+                chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm, is_bass=True)
+                # Bass charts are single-note only; drop any chord events.
+                chart.chords = []
             logger.info(f"    Bass: {len(chart.notes)} notes (no chords per C3 rules)")
             return chart
         except Exception as e:
@@ -1332,7 +1357,7 @@ song_length = {duration_ms}
             try:
                 stem_type = "guitar" if "guitar" in stems else "other"
                 logger.info(f"    Using {stem_type} stem for guitar transcription")
-                guitar_chart = self.transcribe_guitar(guitar_stem, tempo_bpm)
+                guitar_chart = self.transcribe_guitar(guitar_stem, tempo_bpm, full_mix=audio_path)
                 if guitar_chart:
                     result.guitar_notes = len(guitar_chart.notes)
                     logger.info(f"    Guitar: {result.guitar_notes} notes")
@@ -1357,7 +1382,7 @@ song_length = {duration_ms}
         # Bass
         if "bass" in stems:
             try:
-                bass_chart = self.transcribe_bass(stems["bass"], tempo_bpm)
+                bass_chart = self.transcribe_bass(stems["bass"], tempo_bpm, full_mix=audio_path)
                 if bass_chart:
                     result.bass_notes = len(bass_chart.notes)
                     logger.info(f"    Bass: {result.bass_notes} notes")

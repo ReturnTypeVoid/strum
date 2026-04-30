@@ -266,9 +266,91 @@ def export_events_to_midi(
     mid.save(str(output_path))
 
 
+# ─────────────────────────── Pipeline adapter ───────────────────────────────
+# Adapter so batch_pipeline.py can swap the rule-based guitar_bass.transcribe_*
+# call for the neural pipeline without changing its surrounding code.
+# Returns the same GuitarChart dataclass used elsewhere in the project.
+
+_DEFAULT_ONSET_CKPT = ROOT / "checkpoints" / "guitar_v2" / "guitar_v2_onset" / "best.pt"
+_DEFAULT_FRET_CKPT  = ROOT / "checkpoints" / "guitar_v2" / "guitar_v2_fret"  / "best.pt"
+
+# Singleton — Demucs-style; loading the two CRNNs is non-trivial.
+_CHARTER_CACHE: dict[str, "GuitarNeuralCharter"] = {}
+
+
+def _get_charter(device: str | None = None) -> "GuitarNeuralCharter":
+    key = device or "auto"
+    ch = _CHARTER_CACHE.get(key)
+    if ch is None:
+        ch = GuitarNeuralCharter(
+            onset_ckpt=_DEFAULT_ONSET_CKPT,
+            fret_ckpt=_DEFAULT_FRET_CKPT,
+            device=device,
+        )
+        _CHARTER_CACHE[key] = ch
+    return ch
+
+
+def transcribe_guitar_neural(
+    audio_path: "Path | str",
+    tempo_bpm: float = 0.0,
+    confidence_threshold: float | None = None,
+    is_bass: bool = False,
+    device: str | None = None,
+):
+    """Neural V2 pipeline returning a GuitarChart (drop-in for guitar_bass).
+
+    Args:
+        audio_path: stem .wav (other.wav for guitar; bass.wav for bass).
+        tempo_bpm:  song tempo, used only for the returned chart's tempo field.
+                    Auto-detected via librosa if 0.
+        confidence_threshold: overrides onset peak threshold if not None.
+        is_bass:    sets the GuitarChart.instrument field; the model itself
+                    was trained on guitar stems so quality on bass is unproven.
+                    For now we still call it for parity but expect lower F1.
+        device:     "cuda" / "cpu" / None (auto).
+    """
+    import librosa as _lr
+    from src.inference.guitar_bass import GuitarChart, GuitarNote, GuitarChord
+
+    audio_path = Path(audio_path)
+    audio, sr = _lr.load(str(audio_path), sr=22050, mono=True)
+    if tempo_bpm <= 0:
+        try:
+            tempo_fn = getattr(_lr.beat, "tempo", None) or _lr.feature.rhythm.tempo
+            tempo_bpm = float(np.atleast_1d(tempo_fn(y=audio, sr=sr))[0])
+        except Exception:
+            tempo_bpm = 120.0
+
+    ch = _get_charter(device=device)
+    events = ch.transcribe(
+        audio,
+        onset_threshold=confidence_threshold,
+    )
+
+    chart = GuitarChart(
+        tempo_bpm=float(tempo_bpm),
+        instrument="bass" if is_bass else "guitar",
+    )
+    for ev in events:
+        t_ms = ev.time_sec * 1000.0
+        if len(ev.frets) >= 2:
+            chart.chords.append(GuitarChord(
+                time_ms=t_ms,
+                frets=list(ev.frets),
+            ))
+        elif len(ev.frets) == 1:
+            chart.notes.append(GuitarNote(
+                time_ms=t_ms,
+                fret=int(ev.frets[0]),
+            ))
+    return chart
+
+
 __all__ = [
     "GuitarEvent",
     "GuitarNeuralCharter",
     "export_events_to_midi",
+    "transcribe_guitar_neural",
     "FRET_TO_MIDI",
 ]
