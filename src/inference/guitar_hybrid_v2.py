@@ -343,7 +343,8 @@ class GuitarHybridV2Charter:
         onset_threshold: float | None = None,
         snap_window_s: float = 0.075,
         min_pitch_amplitude: float = 0.3,
-        sustain_min_duration_s: float = 0.15,
+        sustain_min_duration_s: float = 0.40,
+        max_chord_size: int = 3,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
 
@@ -377,6 +378,19 @@ class GuitarHybridV2Charter:
             frets = mapper.map(pitches)
             if not frets:
                 continue
+            # Cap chord size: sections with multiple guitars cause basic-pitch
+            # to detect 4-5 simultaneous pitches, leading to over-charted full
+            # chords. Real CH/YARG charts rarely exceed 3-button chords.
+            # Keep the frets corresponding to the LOUDEST pitches.
+            if len(frets) > max_chord_size and bucket:
+                # Sort bucket by amplitude desc and take fret bins for top-N
+                sorted_bucket = sorted(bucket, key=lambda n: -n.amplitude)
+                kept_pitches = [n.midi for n in sorted_bucket[:max_chord_size + 1]]
+                trimmed = mapper.map(kept_pitches)
+                if trimmed:
+                    frets = trimmed[:max_chord_size]
+                else:
+                    frets = frets[:max_chord_size]
             # Confidence proxy: mean amplitude or 0.5 if empty
             amp = float(np.mean([n.amplitude for n in bucket])) if bucket else 0.5
             # Sustain check (longest constituent note)
