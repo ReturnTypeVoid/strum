@@ -617,28 +617,41 @@ class BatchPipeline:
             return None
     
     def transcribe_guitar(self, other_stem: Path, tempo_bpm: float, full_mix: Path | None = None):
-        """Transcribe guitar using Basic Pitch + C3 authoring rules."""
+        """Transcribe guitar.
+
+        Backend selection (env STRUM_GUITAR_BACKEND, default 'hybrid'):
+          * 'hybrid' (default): V2 onset CRNN (F1 0.81) + basic-pitch
+            polyphonic pitch transcription + rule-based pitch→fret. Sidesteps
+            the weak V2 fret head (Event F1 0.17). Runs on the full mix.
+          * 'neural': V2 onset CRNN + V2 fret classifier. Faster but worse
+            fret accuracy.
+          * 'rule': legacy librosa+pYIN+rule on the Demucs other stem.
+        """
         if not self.include_guitar:
             return None
 
-        # Backend selection: neural V2 by default (val Event F1 0.170 vs
-        # rule-based 0.045 on the same eval harness). STRUM_GUITAR_RULE=1
-        # forces the legacy librosa+pYIN+rule-based pipeline.
-        # The neural model was trained on the FULL mix (song.ogg), not on
-        # Demucs stems, so we feed full_mix when available.
         import os as _os_g
-        use_rule = _os_g.environ.get("STRUM_GUITAR_RULE", "0") == "1"
-        backend = "rule" if use_rule else "neural"
-        src_path = other_stem if (use_rule or full_mix is None) else full_mix
+        backend = _os_g.environ.get("STRUM_GUITAR_BACKEND", "hybrid").lower()
+        # Legacy compat
+        if _os_g.environ.get("STRUM_GUITAR_RULE", "0") == "1":
+            backend = "rule"
+
+        if backend == "rule" or full_mix is None:
+            src_path = other_stem
+        else:
+            src_path = full_mix
         logger.info(f"  Transcribing guitar ({backend}, src={src_path.name})...")
 
         try:
-            if use_rule:
+            if backend == "rule":
                 from src.inference.guitar_bass import transcribe_guitar
                 chart = transcribe_guitar(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.3)
-            else:
+            elif backend == "neural":
                 from src.inference.guitar_neural import transcribe_guitar_neural
                 chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm)
+            else:  # hybrid
+                from src.inference.guitar_hybrid_v2 import transcribe_guitar_hybrid
+                chart = transcribe_guitar_hybrid(src_path, tempo_bpm=tempo_bpm)
             logger.info(f"    Guitar: {len(chart.notes)} notes + {len(chart.chords)} chords")
             return chart
         except Exception as e:

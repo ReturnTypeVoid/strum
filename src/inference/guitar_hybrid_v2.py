@@ -358,6 +358,59 @@ def export_events_to_midi_with_sustain(
     mid.save(str(output_path))
 
 
+# ─────────────────────────── batch_pipeline adapter ─────────────────────────
+_HYBRID_CHARTER_CACHE: dict[str, "GuitarHybridV2Charter"] = {}
+_DEFAULT_HYBRID_ONSET_CKPT = ROOT / "checkpoints" / "guitar_v2" / "guitar_v2_onset" / "best.pt"
+
+
+def _get_hybrid_charter(device: str | None = None) -> "GuitarHybridV2Charter":
+    key = device or "auto"
+    ch = _HYBRID_CHARTER_CACHE.get(key)
+    if ch is None:
+        ch = GuitarHybridV2Charter(onset_ckpt=_DEFAULT_HYBRID_ONSET_CKPT, device=device)
+        _HYBRID_CHARTER_CACHE[key] = ch
+    return ch
+
+
+def transcribe_guitar_hybrid(
+    audio_path: "Path | str",
+    tempo_bpm: float = 0.0,
+    is_bass: bool = False,
+    onset_threshold: float | None = None,
+    device: str | None = None,
+):
+    """Hybrid V2 (V2 onset CRNN + basic-pitch + rule pitch→fret) → GuitarChart.
+
+    Drop-in replacement for transcribe_guitar_neural; same return type.
+    """
+    import librosa as _lr
+    from src.inference.guitar_bass import GuitarChart, GuitarNote, GuitarChord
+
+    audio_path = Path(audio_path)
+    audio, sr = _lr.load(str(audio_path), sr=22050, mono=True)
+    if tempo_bpm <= 0:
+        try:
+            tempo_fn = getattr(_lr.beat, "tempo", None) or _lr.feature.rhythm.tempo
+            tempo_bpm = float(np.atleast_1d(tempo_fn(y=audio, sr=sr))[0])
+        except Exception:
+            tempo_bpm = 120.0
+
+    ch = _get_hybrid_charter(device=device)
+    events = ch.transcribe(audio, audio_path, onset_threshold=onset_threshold)
+
+    chart = GuitarChart(
+        tempo_bpm=float(tempo_bpm),
+        instrument="bass" if is_bass else "guitar",
+    )
+    for ev in events:
+        t_ms = ev.time_sec * 1000.0
+        if len(ev.frets) >= 2:
+            chart.chords.append(GuitarChord(time_ms=t_ms, frets=list(ev.frets)))
+        elif len(ev.frets) == 1:
+            chart.notes.append(GuitarNote(time_ms=t_ms, fret=int(ev.frets[0])))
+    return chart
+
+
 __all__ = [
     "GuitarHybridV2Charter",
     "PitchToFretMapper",
@@ -365,4 +418,5 @@ __all__ = [
     "basic_pitch_predict",
     "snap_pitches_to_onsets",
     "export_events_to_midi_with_sustain",
+    "transcribe_guitar_hybrid",
 ]
