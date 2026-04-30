@@ -178,15 +178,25 @@ class GuitarNeuralCharter:
         onset_threshold: Optional[float] = None,
         min_distance_frames: Optional[int] = None,
         fret_threshold: Optional[float] = None,
+        fret_thresholds_per_bit: Optional["np.ndarray | list[float]"] = None,
     ) -> list[GuitarEvent]:
         """Full audio → list[GuitarEvent].
 
         Args:
             audio: mono float32 @ 22050 Hz
+            fret_thresholds_per_bit: optional length-5 array; overrides
+                fret_threshold when given. Tuned values from
+                outputs/guitar_v2/optimal_fret_thresholds.json fix the
+                Green-fret under-prediction in the flat-0.5 default.
         """
         thr_on = onset_threshold if onset_threshold is not None else self.default_onset_thr
         min_d = min_distance_frames if min_distance_frames is not None else self.default_min_dist_frames
-        thr_fr = fret_threshold if fret_threshold is not None else self.default_fret_thr
+        if fret_thresholds_per_bit is not None:
+            thr_fr_arr = np.asarray(fret_thresholds_per_bit, dtype=np.float32)
+            assert thr_fr_arr.shape == (5,), f"expected length-5, got {thr_fr_arr.shape}"
+        else:
+            scalar = fret_threshold if fret_threshold is not None else self.default_fret_thr
+            thr_fr_arr = np.full(5, scalar, dtype=np.float32)
 
         log_mel = self.compute_logmel(audio)                    # (M, T)
         probs = self.predict_onset_probs(log_mel)               # (T,)
@@ -200,7 +210,7 @@ class GuitarNeuralCharter:
             if not valid[i]:
                 continue
             t_sec = float(fr) * (frame_ms / 1000.0)
-            bits = fret_probs[i] >= thr_fr
+            bits = fret_probs[i] >= thr_fr_arr
             frets = tuple(int(b) for b in np.where(bits)[0])
             # Fallback: if no bit crosses threshold, take argmax
             if not frets:
@@ -274,6 +284,14 @@ def export_events_to_midi(
 _DEFAULT_ONSET_CKPT = ROOT / "checkpoints" / "guitar_v2" / "guitar_v2_onset" / "best.pt"
 _DEFAULT_FRET_CKPT  = ROOT / "checkpoints" / "guitar_v2" / "guitar_v2_fret"  / "best.pt"
 
+# Per-bit fret thresholds tuned on the val split via
+# scripts/sweep_fret_thresholds.py. Lifts event F1 from 0.170 (flat 0.5)
+# to 0.175 and — importantly for playability — unbreaks Green by
+# dropping bit-0 threshold to 0.30. Saved at
+# outputs/guitar_v2/optimal_fret_thresholds.json.
+_DEFAULT_FRET_THRESHOLDS = (0.30, 0.75, 0.475, 0.625, 0.65)
+_DEFAULT_ONSET_THRESHOLD = 0.35  # tuned with the per-bit sweep above
+
 # Singleton — Demucs-style; loading the two CRNNs is non-trivial.
 _CHARTER_CACHE: dict[str, "GuitarNeuralCharter"] = {}
 
@@ -325,7 +343,8 @@ def transcribe_guitar_neural(
     ch = _get_charter(device=device)
     events = ch.transcribe(
         audio,
-        onset_threshold=confidence_threshold,
+        onset_threshold=confidence_threshold if confidence_threshold is not None else _DEFAULT_ONSET_THRESHOLD,
+        fret_thresholds_per_bit=_DEFAULT_FRET_THRESHOLDS,
     )
 
     chart = GuitarChart(
