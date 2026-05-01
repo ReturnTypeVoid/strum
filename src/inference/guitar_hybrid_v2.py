@@ -328,9 +328,17 @@ class GuitarHybridV2Charter:
         """
         if latency_offset_s is None:
             import os as _os
-            latency_offset_s = float(_os.environ.get(
+            # Diagnostic on existing charts (May 2026): chart fires ~50ms
+            # EARLIER than audio onsets. Default flipped: ADD 25ms instead of
+            # subtracting (env value is added to peak time).
+            latency_offset_s = -float(_os.environ.get(
                 "STRUM_GUITAR_LATENCY_MS", "25")) / 1000.0
         thr = threshold if threshold is not None else self.default_onset_thr
+        # Optional onset-threshold env override for sweep tuning
+        import os as _os2
+        env_thr = _os2.environ.get("STRUM_GUITAR_PEAK_THR")
+        if env_thr:
+            thr = float(env_thr)
         log_mel = pgw.compute_log_mel(audio)                   # (M, T)
         x = log_mel.unsqueeze(0).unsqueeze(0).to(self.device)  # (1,1,M,T)
         logits = self.onset(x).squeeze(0)
