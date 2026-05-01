@@ -345,9 +345,9 @@ class GuitarHybridV2Charter:
         min_pitch_amplitude: float = 0.3,
         sustain_min_duration_s: float = 0.40,
         max_chord_size: int = 3,
-        energy_gate_pct: float = 35.0,
+        energy_gate_pct: float = 10.0,
         energy_gate_window_s: float = 0.060,
-        min_onset_gap_s: float = 0.080,
+        min_onset_gap_s: float = 0.050,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
 
@@ -375,7 +375,14 @@ class GuitarHybridV2Charter:
             if n_frames > 4:
                 trimmed = audio[: n_frames * frame_len].reshape(n_frames, frame_len)
                 frame_rms = np.sqrt(np.mean(trimmed.astype(np.float32) ** 2, axis=1) + 1e-12)
-                rms_floor = float(np.percentile(frame_rms, energy_gate_pct))
+                # Use a low percentile so only truly silent regions are gated.
+                # Higher percentiles falsely cull quiet legato passages.
+                pct_floor = float(np.percentile(frame_rms, energy_gate_pct))
+                # And require the gate to be a true silence floor — never
+                # exceed 25% of the song's median RMS (so dynamic songs
+                # don't end up gating their quiet verses).
+                median_rms = float(np.median(frame_rms))
+                rms_floor = min(pct_floor, 0.25 * median_rms)
                 kept = []
                 for t in onset_times:
                     s = max(0, int(t * sr) - half_win)
@@ -414,10 +421,10 @@ class GuitarHybridV2Charter:
 
         # Stage 5: assemble events
         events: list[GuitarEvent] = []
-        # Pitch-evidence floor: a single weak basic-pitch note in a leakage
-        # region passes the energy gate. Require either ≥2 pitches OR a
-        # single pitch with amplitude well above the basic-pitch min.
-        single_pitch_amp_floor = max(min_pitch_amplitude * 1.4, 0.45)
+        # Pitch-evidence floor: drop only the *weakest* single-pitch buckets
+        # (basic-pitch ghost notes from leakage). Most real notes have
+        # amplitude >= min_pitch_amplitude already; use a small headroom.
+        single_pitch_amp_floor = min_pitch_amplitude + 0.05
         for t, bucket in zip(onset_times, buckets):
             if not bucket:
                 continue
