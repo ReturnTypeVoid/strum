@@ -314,7 +314,7 @@ class GuitarHybridV2Charter:
         self,
         audio: np.ndarray,
         threshold: float | None = None,
-        latency_offset_s: float = 0.025,
+        latency_offset_s: float | None = None,
     ) -> np.ndarray:
         """Detect onsets and apply attack-latency correction.
 
@@ -323,7 +323,13 @@ class GuitarHybridV2Charter:
         subtract `latency_offset_s` so events line up with note attacks in
         playback (matches drum/vocal pipelines which use librosa onset_strength
         + per-attack refinement).
+
+        Override via env var STRUM_GUITAR_LATENCY_MS (e.g. "0", "25", "-15").
         """
+        if latency_offset_s is None:
+            import os as _os
+            latency_offset_s = float(_os.environ.get(
+                "STRUM_GUITAR_LATENCY_MS", "25")) / 1000.0
         thr = threshold if threshold is not None else self.default_onset_thr
         log_mel = pgw.compute_log_mel(audio)                   # (M, T)
         x = log_mel.unsqueeze(0).unsqueeze(0).to(self.device)  # (1,1,M,T)
