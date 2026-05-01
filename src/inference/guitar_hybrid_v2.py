@@ -70,13 +70,20 @@ class PitchNote:
 
 def basic_pitch_predict(audio_path: Path, min_amplitude: float = 0.3,
                         min_pitch: int = 36, max_pitch: int = 88) -> list[PitchNote]:
-    """Run basic-pitch on an audio file → filtered guitar-range note events.
+    """Run basic-pitch on an audio file → filtered note events.
 
     Args:
         min_amplitude: drop notes with amplitude below this (suppresses noise)
-        min_pitch: MIDI 36 = C2, below standard guitar low E (40)
-        max_pitch: MIDI 88 = E6, above 24th-fret high E (88)
+        min_pitch: MIDI 36 = C2, below standard guitar low E (40).
+            Override via STRUM_BP_MIN_PITCH env (e.g. 24 for bass, 21 for piano).
+        max_pitch: MIDI 88 = E6, above 24th-fret high E.
+            Override via STRUM_BP_MAX_PITCH env (e.g. 108 for piano).
     """
+    import os as _os_bp
+    if _os_bp.environ.get("STRUM_BP_MIN_PITCH"):
+        min_pitch = int(_os_bp.environ["STRUM_BP_MIN_PITCH"])
+    if _os_bp.environ.get("STRUM_BP_MAX_PITCH"):
+        max_pitch = int(_os_bp.environ["STRUM_BP_MAX_PITCH"])
     from basic_pitch.inference import predict
     model = _get_basic_pitch_model()
     _, _, raw_events = predict(str(audio_path), model)

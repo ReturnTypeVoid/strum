@@ -62,13 +62,50 @@ class KeysCharter:
     ):
         self.detection_threshold = detection_threshold
         self.min_notes = min_notes
+
+    def _transcribe_notes_basic_pitch(self, audio_path: str) -> List[KeyNote]:
+        """Transcribe notes via Spotify's basic-pitch (polyphonic).
+
+        Far more accurate than librosa piptrack for piano. Returns full
+        polyphonic note events suitable for Pro Keys; the pitch->lane
+        downmap then produces 5-lane Keys.
+        """
+        from src.inference.guitar_hybrid_v2 import basic_pitch_predict
+
+        # Piano range: A0 (21) to C8 (108). Override basic-pitch's default
+        # guitar range so we don't lose bass-clef and high-treble notes.
+        import os as _os_k
+        prev_min = _os_k.environ.get("STRUM_BP_MIN_PITCH")
+        prev_max = _os_k.environ.get("STRUM_BP_MAX_PITCH")
+        _os_k.environ["STRUM_BP_MIN_PITCH"] = "21"
+        _os_k.environ["STRUM_BP_MAX_PITCH"] = "108"
+        try:
+            pitch_notes = basic_pitch_predict(
+                Path(audio_path), min_amplitude=0.30,
+            )
+        finally:
+            if prev_min is None:
+                _os_k.environ.pop("STRUM_BP_MIN_PITCH", None)
+            else:
+                _os_k.environ["STRUM_BP_MIN_PITCH"] = prev_min
+            if prev_max is None:
+                _os_k.environ.pop("STRUM_BP_MAX_PITCH", None)
+            else:
+                _os_k.environ["STRUM_BP_MAX_PITCH"] = prev_max
+
+        notes: List[KeyNote] = []
+        for pn in pitch_notes:
+            notes.append(KeyNote(
+                start_time=float(pn.t_start),
+                end_time=float(pn.t_end),
+                midi_pitch=int(pn.midi),
+                velocity=max(40, min(127, int(round(pn.amplitude * 127)))),
+            ))
+        notes.sort(key=lambda n: n.start_time)
+        return notes
     
     def _transcribe_notes_librosa(self, audio_path: str) -> List[KeyNote]:
-        """
-        Transcribe notes using librosa's onset detection and pitch tracking.
-        
-        This is a simpler alternative to Basic Pitch that works with Python 3.12.
-        """
+        """Transcribe notes via librosa onset + piptrack (legacy fallback only)."""
         logger.info(f"Transcribing with librosa: {audio_path}")
         
         y, sr = librosa.load(audio_path, sr=22050)
@@ -263,11 +300,15 @@ class KeysCharter:
         if not has_keys and force:
             logger.warning("Forcing keys transcription despite low keyboard confidence")
         
-        # Step 2: Transcribe using librosa
-        logger.info("Transcribing keyboard notes...")
-        notes = self._transcribe_notes_librosa(audio_path)
-        
-        logger.info(f"Transcribed {len(notes)} keyboard notes")
+        # Step 2: Transcribe — prefer basic-pitch (polyphonic, far better
+        # for piano), fall back to librosa piptrack on any error.
+        try:
+            notes = self._transcribe_notes_basic_pitch(audio_path)
+            logger.info(f"Transcribed {len(notes)} keyboard notes (basic-pitch)")
+        except Exception as e:
+            logger.warning(f"basic-pitch failed for keys ({e}); falling back to librosa")
+            notes = self._transcribe_notes_librosa(audio_path)
+            logger.info(f"Transcribed {len(notes)} keyboard notes (librosa fallback)")
         
         if len(notes) < self.min_notes and not force:
             logger.info(f"Too few notes ({len(notes)} < {self.min_notes}), skipping keys track")

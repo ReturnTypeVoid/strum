@@ -664,35 +664,57 @@ class BatchPipeline:
             return None
     
     def transcribe_bass(self, bass_stem: Path, tempo_bpm: float, full_mix: Path | None = None):
-        """Transcribe bass using the rule-based pipeline on the bass stem.
+        """Transcribe bass.
 
-        The neural V2 model was trained on guitar — running it on the full mix
-        for bass yields the *same* output as guitar (same model, same input).
-        Until a bass-specific model exists, bass stays on the rule-based
-        librosa+pYIN pipeline operating on Demucs's bass.wav stem.
-        STRUM_BASS_NEURAL=1 forces the (broken) neural path for A/B testing.
+        Backend selection (env STRUM_BASS_BACKEND, default 'hybrid'):
+          * 'hybrid': V2 onset CRNN + basic-pitch + rule pitch->fret on
+            bass.wav stem (same pipeline as guitar, with min_pitch=24).
+          * 'rule': legacy librosa+pYIN on bass.wav.
+          * 'neural': V2 fret head on full mix (broken — = guitar output).
         """
         if not self.include_bass:
             return None
 
         import os as _os_b
-        force_neural = _os_b.environ.get("STRUM_BASS_NEURAL", "0") == "1"
-        if force_neural and full_mix is not None:
-            backend = "neural(forced, =guitar)"
+        backend = _os_b.environ.get("STRUM_BASS_BACKEND", "hybrid").lower()
+        # legacy compat
+        if _os_b.environ.get("STRUM_BASS_NEURAL", "0") == "1":
+            backend = "neural"
+
+        if backend == "neural" and full_mix is not None:
             src_path = full_mix
         else:
-            backend = "rule"
             src_path = bass_stem
         logger.info(f"  Transcribing bass ({backend}, src={src_path.name}, no chords per C3 rules)...")
 
         try:
-            if force_neural and full_mix is not None:
+            if backend == "neural" and full_mix is not None:
                 from src.inference.guitar_neural import transcribe_guitar_neural
                 chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm, is_bass=True)
-                chart.chords = []
-            else:
+            elif backend == "rule":
                 from src.inference.guitar_bass import transcribe_bass
                 chart = transcribe_bass(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
+            else:  # hybrid
+                # Bass pitch range: E1 (28) to G4 (67). Override basic-pitch
+                # range via env so the same hybrid pipeline doesn't drop low
+                # notes. Restored after the call.
+                prev_min = _os_b.environ.get("STRUM_BP_MIN_PITCH")
+                prev_max = _os_b.environ.get("STRUM_BP_MAX_PITCH")
+                _os_b.environ["STRUM_BP_MIN_PITCH"] = "24"
+                _os_b.environ["STRUM_BP_MAX_PITCH"] = "67"
+                try:
+                    from src.inference.guitar_hybrid_v2 import transcribe_guitar_hybrid
+                    chart = transcribe_guitar_hybrid(src_path, tempo_bpm=tempo_bpm, is_bass=True)
+                finally:
+                    if prev_min is None:
+                        _os_b.environ.pop("STRUM_BP_MIN_PITCH", None)
+                    else:
+                        _os_b.environ["STRUM_BP_MIN_PITCH"] = prev_min
+                    if prev_max is None:
+                        _os_b.environ.pop("STRUM_BP_MAX_PITCH", None)
+                    else:
+                        _os_b.environ["STRUM_BP_MAX_PITCH"] = prev_max
+            chart.chords = []  # bass = single notes only
             logger.info(f"    Bass: {len(chart.notes)} notes (no chords per C3 rules)")
             return chart
         except Exception as e:
