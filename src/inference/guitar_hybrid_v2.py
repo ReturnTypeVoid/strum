@@ -345,15 +345,56 @@ class GuitarHybridV2Charter:
         min_pitch_amplitude: float = 0.3,
         sustain_min_duration_s: float = 0.40,
         max_chord_size: int = 3,
+        energy_gate_pct: float = 35.0,
+        energy_gate_window_s: float = 0.060,
+        min_onset_gap_s: float = 0.080,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
 
         Args:
             audio: mono float32 @ 22050 Hz (used for V2 onset model)
             audio_path: path to original audio file (used by basic-pitch)
+            energy_gate_pct: drop onsets whose local RMS is below this
+                percentile of song-wide RMS (filters silent sections where
+                Demucs leakage triggers ghost onsets).
+            min_onset_gap_s: enforce minimum gap between successive onsets
+                to suppress transition double-fires (e.g. drum hit bleed).
         """
         # Stage 1: onsets
         onset_times = self.detect_onsets(audio, threshold=onset_threshold)
+
+        # Stage 1b: audio-energy gate — drop onsets in near-silent regions
+        # where only stem-leakage exists (avoids "constant string of notes
+        # when no guitar is playing").
+        if len(onset_times) > 0 and energy_gate_pct > 0:
+            sr = pgw.SAMPLE_RATE
+            half_win = max(1, int(energy_gate_window_s * sr / 2))
+            # Per-frame RMS using non-overlapping windows for the floor estimate
+            frame_len = int(0.040 * sr)
+            n_frames = len(audio) // frame_len
+            if n_frames > 4:
+                trimmed = audio[: n_frames * frame_len].reshape(n_frames, frame_len)
+                frame_rms = np.sqrt(np.mean(trimmed.astype(np.float32) ** 2, axis=1) + 1e-12)
+                rms_floor = float(np.percentile(frame_rms, energy_gate_pct))
+                kept = []
+                for t in onset_times:
+                    s = max(0, int(t * sr) - half_win)
+                    e = min(len(audio), int(t * sr) + half_win)
+                    if e <= s:
+                        continue
+                    local = audio[s:e]
+                    local_rms = float(np.sqrt(np.mean(local.astype(np.float32) ** 2) + 1e-12))
+                    if local_rms >= rms_floor:
+                        kept.append(t)
+                onset_times = np.asarray(kept, dtype=np.float64) if kept else np.empty(0)
+
+        # Stage 1c: enforce minimum gap (suppresses double-fires on transitions)
+        if len(onset_times) > 1 and min_onset_gap_s > 0:
+            kept = [float(onset_times[0])]
+            for t in onset_times[1:]:
+                if (t - kept[-1]) >= min_onset_gap_s:
+                    kept.append(float(t))
+            onset_times = np.asarray(kept, dtype=np.float64)
 
         # Stage 2: pitches
         notes = basic_pitch_predict(audio_path, min_amplitude=min_pitch_amplitude)
@@ -373,7 +414,15 @@ class GuitarHybridV2Charter:
 
         # Stage 5: assemble events
         events: list[GuitarEvent] = []
+        # Pitch-evidence floor: a single weak basic-pitch note in a leakage
+        # region passes the energy gate. Require either ≥2 pitches OR a
+        # single pitch with amplitude well above the basic-pitch min.
+        single_pitch_amp_floor = max(min_pitch_amplitude * 1.4, 0.45)
         for t, bucket in zip(onset_times, buckets):
+            if not bucket:
+                continue
+            if len(bucket) == 1 and bucket[0].amplitude < single_pitch_amp_floor:
+                continue
             pitches = [n.midi for n in bucket]
             frets = mapper.map(pitches)
             if not frets:
