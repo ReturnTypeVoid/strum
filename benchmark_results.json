@@ -1,0 +1,330 @@
+{
+  "tolerance_ms": 100.0,
+  "per_song": {
+    "Linkin Park - Crawling": {
+      "drums": {
+        "f1": 0.7466473359913012,
+        "precision": 0.6885026737967914,
+        "recall": 0.8155186064924782,
+        "lane_accuracy": 0.34563106796116505,
+        "gt_count": 1263,
+        "pred_count": 1496,
+        "tp": 1030,
+        "fp": 466,
+        "fn": 233
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 1613
+      },
+      "bass": {
+        "f1": 0.20939334637964774,
+        "precision": 0.12145289443813848,
+        "recall": 0.7588652482269503,
+        "lane_accuracy": 0.12149532710280374,
+        "gt_count": 141,
+        "pred_count": 881,
+        "tp": 107,
+        "fp": 774,
+        "fn": 34
+      },
+      "vocals": {
+        "f1": 0.37924865831842575,
+        "precision": 0.4061302681992337,
+        "recall": 0.35570469798657717,
+        "lane_accuracy": 0.25471698113207547,
+        "gt_count": 298,
+        "pred_count": 261,
+        "tp": 106,
+        "fp": 155,
+        "fn": 192
+      }
+    },
+    "Linkin Park - Faint": {
+      "drums": {
+        "f1": 0.9081675835801947,
+        "precision": 0.8853135313531353,
+        "recall": 0.9322328410078193,
+        "lane_accuracy": 0.8974836905871388,
+        "gt_count": 1151,
+        "pred_count": 1212,
+        "tp": 1073,
+        "fp": 139,
+        "fn": 78
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 841
+      },
+      "bass": {
+        "f1": 0.7642276422764227,
+        "precision": 0.6225165562913907,
+        "recall": 0.9894736842105263,
+        "lane_accuracy": 0.0851063829787234,
+        "gt_count": 380,
+        "pred_count": 604,
+        "tp": 376,
+        "fp": 228,
+        "fn": 4
+      },
+      "vocals": {
+        "f1": 0.6352941176470588,
+        "precision": 0.6506024096385542,
+        "recall": 0.6206896551724138,
+        "lane_accuracy": 0.13703703703703704,
+        "gt_count": 435,
+        "pred_count": 415,
+        "tp": 270,
+        "fp": 145,
+        "fn": 165
+      }
+    },
+    "Linkin Park - New Divide": {
+      "drums": {
+        "f1": 0.8583834335337341,
+        "precision": 0.791256157635468,
+        "recall": 0.9379562043795621,
+        "lane_accuracy": 0.6863813229571984,
+        "gt_count": 1370,
+        "pred_count": 1624,
+        "tp": 1285,
+        "fp": 339,
+        "fn": 85
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 674
+      },
+      "bass": {
+        "f1": 0.856694560669456,
+        "precision": 0.780743565300286,
+        "recall": 0.9490150637311703,
+        "lane_accuracy": 0.0695970695970696,
+        "gt_count": 863,
+        "pred_count": 1049,
+        "tp": 819,
+        "fp": 230,
+        "fn": 44
+      },
+      "vocals": {
+        "f1": 0.5098039215686274,
+        "precision": 0.5767918088737202,
+        "recall": 0.45675675675675675,
+        "lane_accuracy": 0.2485207100591716,
+        "gt_count": 370,
+        "pred_count": 293,
+        "tp": 169,
+        "fp": 124,
+        "fn": 201
+      }
+    },
+    "Linkin Park - Up from the Bottom": {
+      "drums": {
+        "f1": 0.8743809095002253,
+        "precision": 0.9195075757575758,
+        "recall": 0.8334763948497854,
+        "lane_accuracy": 0.690010298661174,
+        "gt_count": 1165,
+        "pred_count": 1056,
+        "tp": 971,
+        "fp": 85,
+        "fn": 194
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 722
+      },
+      "bass": {
+        "f1": 0.9206008583690988,
+        "precision": 0.9186295503211992,
+        "recall": 0.9225806451612903,
+        "lane_accuracy": 0.2494172494172494,
+        "gt_count": 465,
+        "pred_count": 467,
+        "tp": 429,
+        "fp": 38,
+        "fn": 36
+      },
+      "vocals": {
+        "f1": 0.5902031063321387,
+        "precision": 0.6569148936170213,
+        "recall": 0.5357917570498916,
+        "lane_accuracy": 0.1214574898785425,
+        "gt_count": 461,
+        "pred_count": 376,
+        "tp": 247,
+        "fp": 129,
+        "fn": 214
+      }
+    },
+    "Linkin Park - Waiting for the End": {
+      "drums": {
+        "skipped": "no GT track"
+      },
+      "guitar": {
+        "skipped": "no GT track"
+      },
+      "bass": {
+        "skipped": "no GT track"
+      },
+      "vocals": {
+        "skipped": "no GT track"
+      }
+    },
+    "Linkin Park - What I've Done": {
+      "drums": {
+        "f1": 0.8677141409021796,
+        "precision": 0.8318756073858115,
+        "recall": 0.9067796610169492,
+        "lane_accuracy": 0.7686915887850467,
+        "gt_count": 944,
+        "pred_count": 1029,
+        "tp": 856,
+        "fp": 173,
+        "fn": 88
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 901
+      },
+      "bass": {
+        "f1": 0.9282407407407408,
+        "precision": 0.8660907127429806,
+        "recall": 1.0,
+        "lane_accuracy": 0.14713216957605985,
+        "gt_count": 401,
+        "pred_count": 463,
+        "tp": 401,
+        "fp": 62,
+        "fn": 0
+      },
+      "vocals": {
+        "f1": 0.4363636363636363,
+        "precision": 0.46408839779005523,
+        "recall": 0.4117647058823529,
+        "lane_accuracy": 0.19047619047619047,
+        "gt_count": 204,
+        "pred_count": 181,
+        "tp": 84,
+        "fp": 97,
+        "fn": 120
+      }
+    },
+    "Yellowcard - Ocean Avenue": {
+      "drums": {
+        "f1": 0.38655462184873957,
+        "precision": 0.3693790149892934,
+        "recall": 0.40540540540540543,
+        "lane_accuracy": 0.37681159420289856,
+        "gt_count": 1702,
+        "pred_count": 1868,
+        "tp": 690,
+        "fp": 1178,
+        "fn": 1012
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 1355
+      },
+      "bass": {
+        "f1": 0.41142191142191137,
+        "precision": 0.38453159041394336,
+        "recall": 0.4423558897243108,
+        "lane_accuracy": 0.1274787535410765,
+        "gt_count": 798,
+        "pred_count": 918,
+        "tp": 353,
+        "fp": 565,
+        "fn": 445
+      },
+      "vocals": {
+        "f1": 0.2147058823529412,
+        "precision": 0.23174603174603176,
+        "recall": 0.2,
+        "lane_accuracy": 0.0958904109589041,
+        "gt_count": 365,
+        "pred_count": 315,
+        "tp": 73,
+        "fp": 242,
+        "fn": 292
+      }
+    },
+    "Yellowcard - Only One": {
+      "drums": {
+        "f1": 0.8212846009137329,
+        "precision": 0.780388151174668,
+        "recall": 0.8667044809982983,
+        "lane_accuracy": 0.42342931937172773,
+        "gt_count": 1763,
+        "pred_count": 1958,
+        "tp": 1528,
+        "fp": 430,
+        "fn": 235
+      },
+      "guitar": {
+        "skipped": "no pred track",
+        "gt_count": 1707
+      },
+      "bass": {
+        "f1": 0.6835128417564209,
+        "precision": 0.5765199161425576,
+        "recall": 0.8392675483214649,
+        "lane_accuracy": 0.28363636363636363,
+        "gt_count": 983,
+        "pred_count": 1431,
+        "tp": 825,
+        "fp": 606,
+        "fn": 158
+      },
+      "vocals": {
+        "f1": 0.6248131539611361,
+        "precision": 0.6551724137931034,
+        "recall": 0.5971428571428572,
+        "lane_accuracy": 0.2631578947368421,
+        "gt_count": 350,
+        "pred_count": 319,
+        "tp": 209,
+        "fp": 110,
+        "fn": 141
+      }
+    }
+  },
+  "summary": {
+    "drums": {
+      "f1": 0.7584306923116167,
+      "precision": 0.7256663086986235,
+      "recall": 0.7942936524898483,
+      "lane_accuracy": 0.5967980626933943,
+      "tp": 7433,
+      "fp": 2810,
+      "fn": 1925
+    },
+    "guitar": {
+      "f1": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "lane_accuracy": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0
+    },
+    "bass": {
+      "f1": 0.6724908573750508,
+      "precision": 0.5694133837949423,
+      "recall": 0.8211361944926817,
+      "lane_accuracy": 0.16525679758308157,
+      "tp": 3310,
+      "fp": 2503,
+      "fn": 721
+    },
+    "vocals": {
+      "f1": 0.4988154210639673,
+      "precision": 0.5361111111111111,
+      "recall": 0.46637132501006845,
+      "lane_accuracy": 0.1848013816925734,
+      "tp": 1158,
+      "fp": 1002,
+      "fn": 1325
+    }
+  }
+}

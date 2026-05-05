@@ -103,13 +103,40 @@ This reduces post-snap grid error to <5 ms on the verified test set across drums
 
 ## Performance
 
+### Component-level (held-out test set)
+
 | Component | Metric | Score |
 |-----------|--------|-------|
-| Onset Detection (V14) | F1 Score | 93.9% |
-| Drum Classification (6-model ensemble) | F1 Score | 85.2% |
-| Best Single Classifier (V12c) | F1 Score | 83.8% |
+| Drums — Onset Detection (V14) | Frame F1 | 93.9% |
+| Drums — Lane Classification (6-model ensemble) | Per-onset F1 | 85.2% |
+| Drums — Best Single Classifier (V12c) | Per-onset F1 | 83.8% |
 
 Evaluated on a held-out test set from ~5,000 human-authored Clone Hero/YARG pro drum charts.
+
+### End-to-end vs human-authored game charts
+
+Aggregate per-instrument onset F1 against ground-truth Clone Hero/YARG charts (8 paired songs: Linkin Park × 6, Yellowcard × 2; Expert difficulty; ±100 ms tolerance — looser than the component metric because human chart timing has natural ±50–100 ms drift vs. the audio):
+
+| Instrument | F1 | Precision | Recall | Lane Accuracy |
+|------------|------|-----------|--------|---------------|
+| Drums      | 75.8% | 72.6% | 79.4% | 59.7% |
+| Guitar¹    | 59.2% | 56.3% | 62.4% | 33.1% |
+| Bass       | 67.2% | 56.9% | 82.1% | 16.5%² |
+| Vocals     | 49.9% | 53.6% | 46.6% | 18.5%³ |
+
+¹ Guitar measured on a previous run (`pred-v3p1`) due to a known bug where `PART GUITAR` is dropped from the merged `notes.mid` in the latest pipeline build (under investigation; the underlying transcriber still works).
+² Bass lane accuracy is intentionally low for end-to-end: the rule-based pitch→fret mapper picks playable single-note runs that don't always match the chart author's voicing choices.
+³ Vocals lane accuracy reflects ±1 semitone snap drift; pitched recall is what actually matters for sing-along playback.
+
+Reproduce with:
+
+```bash
+python scripts/eval_benchmark.py \
+  --gt-dir /path/to/charts-gt \
+  --pred-dir /path/to/strum-predictions \
+  --tolerance-ms 100 \
+  --out benchmark_results.json
+```
 
 ## Quick Start
 
