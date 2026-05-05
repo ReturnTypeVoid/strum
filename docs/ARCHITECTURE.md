@@ -1,446 +1,316 @@
 # STRUM Architecture
 
-## System Overview
+This document describes the **as-built** STRUM pipeline. For high-level usage
+see [README.md](../README.md); for status & next steps see
+[ROADMAP.md](ROADMAP.md).
 
-STRUM is a modular pipeline for converting audio files into game-compatible charts for Clone Hero and YARG. The system prioritizes accuracy for drums, vocals, and pro keys (which map 1:1 with real performance), while using intelligent reduction for guitar and bass.
+## 1. System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              STRUM PIPELINE                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌──────────┐    ┌──────────────┐    ┌─────────────┐    ┌───────────────┐  │
-│  │  Audio   │───▶│ Preprocessing │───▶│   Demucs    │───▶│  Instrument   │  │
-│  │  Input   │    │  (normalize)  │    │ Separation  │    │   Pipelines   │  │
-│  └──────────┘    └──────────────┘    └─────────────┘    └───────────────┘  │
-│                                              │                    │         │
-│                          ┌───────────────────┼────────────────────┤         │
-│                          ▼                   ▼                    ▼         │
-│                    ┌──────────┐        ┌──────────┐        ┌──────────┐    │
-│                    │  Drums   │        │  Bass    │        │  Vocals  │    │
-│                    │  Stem    │        │  Stem    │        │  Stem    │    │
-│                    └────┬─────┘        └────┬─────┘        └────┬─────┘    │
-│                         │                   │                    │         │
-│                         ▼                   ▼                    ▼         │
-│                    ┌──────────┐        ┌──────────┐        ┌──────────┐    │
-│                    │  CRNN    │        │  Basic   │        │  Basic   │    │
-│                    │  Model   │        │  Pitch   │        │  Pitch   │    │
-│                    │(trained) │        │ + Rules  │        │+ Harmony │    │
-│                    └────┬─────┘        └────┬─────┘        └────┬─────┘    │
-│                         │                   │                    │         │
-│                         └───────────────────┼────────────────────┘         │
-│                                             ▼                               │
-│                                    ┌─────────────────┐                     │
-│                                    │  Chart Export   │                     │
-│                                    │ (.mid / .chart) │                     │
-│                                    └─────────────────┘                     │
-│                                             │                               │
-│                                             ▼                               │
-│                              ┌──────────────────────────┐                  │
-│                              │   Difficulty Generation  │                  │
-│                              │ (Expert/Hard/Medium/Easy)│                  │
-│                              └──────────────────────────┘                  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Module Specifications
-
-### 1. Preprocessing (`src/preprocessing/`)
-
-#### Audio Normalization
-- **Sample Rate**: Resample all audio to 44.1 kHz
-- **Channels**: Convert to mono for processing (preserve stereo for separation)
-- **Loudness**: Normalize to -14 LUFS for consistent model input
-- **Format**: Support WAV, MP3, FLAC, OGG input
-
-#### Demucs Separation (`separation.py`)
-- **Model**: `htdemucs` (Hybrid Transformer Demucs v4)
-- **Stems**: drums, bass, vocals, other
-- **Output**: Separated stems as 44.1kHz WAV files
-- **GPU**: Utilize CUDA when available (falls back to CPU)
-
-#### Chart Parsing (`parsers/`)
-
-**MIDI Parser** (`.mid` files):
-- Parse Standard MIDI File (SMF) Type 0 or 1
-- Extract tempo map (microseconds per quarter note)
-- Extract time signature events
-- Extract note events with timing, pitch, velocity
-
-**Chart Parser** (`.chart` files):
-- Parse Clone Hero .chart format
-- Extract [Song] metadata section
-- Extract [SyncTrack] for tempo/time signatures
-- Extract instrument tracks ([ExpertDrums], etc.)
-
-#### Audio-Chart Alignment (`alignment.py`)
-- Compute cross-correlation between chart-derived click track and audio
-- Detect and correct systematic offset (typical range: -50ms to +50ms)
-- Output alignment offset in milliseconds
-
-### 2. Pro Drums Model (`src/models/drums.py`)
-
-#### Architecture: CRNN (Convolutional Recurrent Neural Network)
+STRUM converts a single audio file (`song.ogg/.wav/.mp3`) into a Clone Hero /
+YARG chart package containing PART DRUMS, PART GUITAR, PART BASS, PART VOCALS
+(with lyrics), and PART KEYS — all aligned to a common tempo grid.
 
 ```
-Input: Mel-spectrogram (n_mels=128, hop_length=512, sr=44100)
-       Shape: (batch, 1, time_frames, 128)
-       
-       ┌─────────────────────────────────────────┐
-       │         Conv2D Block 1                  │
-       │  Conv2D(1, 32, 3x3) → BN → ReLU → Pool  │
-       └─────────────────────────────────────────┘
-                          │
-       ┌─────────────────────────────────────────┐
-       │         Conv2D Block 2                  │
-       │  Conv2D(32, 64, 3x3) → BN → ReLU → Pool │
-       └─────────────────────────────────────────┘
-                          │
-       ┌─────────────────────────────────────────┐
-       │         Conv2D Block 3                  │
-       │  Conv2D(64, 128, 3x3) → BN → ReLU → Pool│
-       └─────────────────────────────────────────┘
-                          │
-       ┌─────────────────────────────────────────┐
-       │         Reshape + BiLSTM                │
-       │  BiLSTM(hidden=256, layers=2, dropout)  │
-       └─────────────────────────────────────────┘
-                          │
-       ┌─────────────────────────────────────────┐
-       │         Output Heads (per frame)        │
-       │  - 5x Onset logits (kick/R/Y/B/G)       │
-       │  - 3x Cymbal flags (Y/B/G)              │
-       │  - 5x Velocity (optional regression)    │
-       └─────────────────────────────────────────┘
-
-Output Shape: (batch, time_frames, 13)
-  - [:, :, 0:5]  = onset probabilities per lane
-  - [:, :, 5:8]  = cymbal flags (yellow, blue, green)
-  - [:, :, 8:13] = velocity values (0-127 normalized)
+                           audio (44.1 kHz)
+                                 │
+                       ┌─────────▼──────────┐
+                       │  Demucs htdemucs   │
+                       │  6-stem separation │
+                       └─────────┬──────────┘
+                                 │
+       ┌────────────┬────────────┼────────────┬────────────┐
+       │            │            │            │            │
+   drums.wav    guitar.wav    bass.wav    vocals.wav    other.wav
+       │            │            │            │            │
+       ▼            ▼            ▼            ▼            ▼
+   Two-stage     Hybrid       Hybrid       Whisper      Spectral
+   CRNN +        onset +      onset +      + pYIN +     keyboard
+   ensemble      Basic Pitch  Basic Pitch  alignment    detector
+   classifier    + fret map   + fret map   + LRCLIB     + piptrack
+       │            │            │            │            │
+       └────────────┴────────┬───┴────────────┴────────────┘
+                             │
+                ┌────────────▼─────────────┐
+                │  BPM grid alignment      │
+                │  (±5 BPM @ 0.1 res +     │
+                │  beat-zero phase snap)   │
+                └────────────┬─────────────┘
+                             │
+                ┌────────────▼─────────────┐
+                │  Phase shift + 32nd-note │
+                │  snap (per-lane roll     │
+                │  detection)              │
+                └────────────┬─────────────┘
+                             │
+                ┌────────────▼─────────────┐
+                │  Difficulty reduction    │
+                │  (Expert/Hard/Med/Easy)  │
+                └────────────┬─────────────┘
+                             │
+                ┌────────────▼─────────────┐
+                │  notes.mid + song.ini    │
+                │  + album art + audio     │
+                └──────────────────────────┘
 ```
 
-#### Training Configuration
-```yaml
-# configs/drums.yaml
-model:
-  n_mels: 128
-  hop_length: 512
-  conv_channels: [32, 64, 128]
-  lstm_hidden: 256
-  lstm_layers: 2
-  dropout: 0.3
+## 2. Drums Pipeline
 
-training:
-  batch_size: 32
-  learning_rate: 0.001
-  epochs: 100
-  checkpoint_every: 5
-  early_stopping_patience: 15
+The flagship pipeline — a two-stage neural system with audio-coupled rescue
+passes and ensemble voting. Implemented in `scripts/batch_infer_hybrid.py` and
+called from `batch_pipeline.py`.
 
-loss:
-  onset_weight: 1.0
-  cymbal_weight: 0.5
-  velocity_weight: 0.3
-  pos_weight: 3.0  # Handle class imbalance
+### 2.1 Stage 1 — Onset Detection (`TwoStageDrumsCRNN`, V14)
 
-augmentation:
-  time_stretch: [0.9, 1.1]
-  pitch_shift: [-2, 2]  # semitones
-  noise_level: 0.01
-```
+Mel spectrograms (128 mel bins, 22050 Hz, hop 512) → CNN → BiLSTM → 1-D
+onset probability per frame. Detected onsets become **lane-agnostic** drum hits
+with timestamps. Trained on ~5k human pro-drum charts; verified F1 = 93.9%.
 
-### 3. Clone Hero / YARG Pro Drums MIDI Mapping
+Architecture: `src/models/drums_v13.py::TwoStageDrumsCRNN` (V14 reuses the V13
+class with a stronger checkpoint).
 
-#### Standard Pro Drums Note Numbers
+### 2.2 Stage 2 — Lane Classification (Ensemble)
 
-| Lane | Note Number | Description | Cymbal Modifier |
-|------|-------------|-------------|-----------------|
-| Kick | 95 | Bass drum | N/A |
-| Red (Snare) | 96 | Snare drum | N/A |
-| Yellow | 97 | Hi-hat (cymbal) / High tom | +110 for cymbal |
-| Blue | 98 | Ride cymbal / Mid tom | +111 for cymbal |
-| Green | 99 | Crash cymbal / Floor tom | +112 for cymbal |
+Each detected onset is classified across 8 lanes (Kick, Snare, Hi-Hat, Crash,
+Ride, High Tom, Mid Tom, Floor Tom) by an ensemble of independently-trained
+`OnsetClassifier` models with `PER_CLASS_WEIGHTS`:
 
-#### Cymbal Markers
-- Yellow cymbal: Note 110 simultaneous with note 97
-- Blue cymbal: Note 111 simultaneous with note 98  
-- Green cymbal: Note 112 simultaneous with note 99
+| Member | Config | Notes |
+|--------|--------|-------|
+| V2  | `onset_classifier.yaml`            | Original baseline, full mix |
+| V6  | `onset_classifier_v6.yaml`         | Stronger snare/hi-hat head |
+| V12c| `onset_classifier_v12_clean.yaml`  | Trained on clean Demucs stems |
+| V15 | `onset_classifier_v15.yaml`        | Bg-mel subtraction |
+| V16 | `onset_classifier_v16.yaml`        | Cymbal-aware loss |
 
-#### Velocity Mapping
-- Clone Hero uses velocity 1-127
-- Map model velocity output [0, 1] → [1, 127]
-- Ghost notes: velocity < 50
-- Accent notes: velocity > 100
+Voting uses class-weighted soft-max averaging followed by argmax. Verified
+ensemble F1 = 85.2%; best single member (V12c) = 83.8%.
 
-#### Special Notes
-| Note | Description |
-|------|-------------|
-| 116 | Star Power / Overdrive phrase start |
-| 103 | Solo marker start |
-| 104 | Solo marker end |
-| 105 | Player 1 phrase (for vocals) |
-| 106 | Player 2 phrase (for vocals) |
+### 2.3 Rescue & Refinement Passes
 
-### 4. Guitar/Bass Rule Engine
+After classification, six audio-coupled passes index back into the mel-frame
+probability tensor `mc_frame_probs` to fix systematic errors. **Critically, all
+six must run on the original time base — before any phase shift is applied**
+(see §6).
 
-#### Pitch-to-Fret Mapping (Bass)
+| Pass | Purpose |
+|------|---------|
+| `phase3_onset_rescue` | Recover missed quiet onsets via mel-frame peak picking |
+| `phase3_cymbal_cooccurrence_rescue` | Add missing cymbals when kick+cymbal frame coincides |
+| `apply_cymbal_to_tom_rescue` | Convert false-positive cymbals to toms by spectral centroid |
+| `apply_drumsep_hits_arbiter` | Cross-check against Demucs drum-separation stems |
+| `spectral_reclassify` | Resolve tom-vs-cymbal confusion by harmonic ratio |
+| `apply_tom_refinement_filter` | Tom-refinement CNN (`src/models/tom_refinement.py`) |
+
+### 2.4 Post-Processing (`scripts/chart_postprocess.py`)
+
+* Bidirectional iterative streak smoothing (collapses isolated mis-classifications
+  inside a uniform streak)
+* `kick_suppresses_floor_tom` (kick + floor tom on same frame → drop the tom)
+* `enforce_single_tom_per_onset` (one tom marker per onset, max 110/111/112)
+* `cap_close_hands` (no two cymbals < 60 ms apart unless tom-roll context)
+* `protect_tom_fills` (preserve dense tom rolls from over-aggressive snap)
+* Lane conflict resolution + velocity normalization
+
+## 3. Guitar & Bass Pipeline
+
+Both guitar and bass share the same hybrid architecture
+(`src/inference/guitar_hybrid_v2.py`). Backend selection via env vars:
+
+| Backend | Onset source | Pitch source | Use case |
+|---------|--------------|--------------|----------|
+| `hybrid` *(default)* | V2 onset CRNN on Demucs stem | Spotify Basic Pitch | Best balance |
+| `neural` | V2 onset CRNN on full mix | V2 fret head | Pure-neural baseline |
+| `basicpitch` | Basic Pitch onsets | Basic Pitch | Fallback for sparse onset stems |
+| `rule` | librosa onset_detect | pYIN | Legacy, no neural component |
+
+### 3.1 Onset Detection (V1/V2 Guitar CRNN)
+
+`src/models/guitar_v1.py::OnsetCRNN` — single-output onset head trained on
+isolated `guitar.ogg` stems from ~5k charts. V2 adds a deeper backbone and
+section-aware peak-thresholding. Configs: `guitar_v1.yaml`, `guitar_v2.yaml`.
+
+### 3.2 Polyphonic Pitch (Basic Pitch)
+
+[Spotify Basic Pitch](https://github.com/spotify/basic-pitch) transcribes each
+detected onset window into 0–N MIDI pitches (chord support). For bass we
+override the model's MIDI range to 24–67 via `STRUM_BP_MIN_PITCH` /
+`STRUM_BP_MAX_PITCH`, and use a softer onset peak threshold
+(`STRUM_GUITAR_PEAK_THR=0.35`) because bass attacks are weaker than guitar.
+
+### 3.3 Pitch → Fret Mapping
+
+Default: **rule-based register allocation**. Pitches are bucketed into the
+five Clone Hero frets by absolute MIDI value, with chord-shape preservation.
+HOPO threshold is 170 ms.
+
+Optional: **`PitchToFretMapper` (V4)** — a learned mapper trained on ~5k chart
+pitch→fret pairs (`scripts/build_mapper_dataset.py` +
+`scripts/train_fret_mapper.py`). Enabled with `STRUM_FRET_MAPPER=1`.
+
+### 3.4 Section Router
+
+`src/inference/section_router.py` predicts per-1-second section labels
+(verse/chorus/solo/etc.) using `src/models/section_classifier.py` and modulates
+the onset peak threshold per section, preventing over-charting in quiet verses
+and under-charting in dense choruses. Optional, gated by checkpoint presence.
+
+## 4. Vocals Pipeline (`scripts/vocals_charter.py`)
+
+1. **Lyric transcription** — OpenAI Whisper extracts word-level timestamps
+   from the Demucs vocal stem.
+2. **Pitch contour** — `librosa.pyin` tracks vocal F0 at 10 ms resolution.
+3. **Word ↔ pitch alignment** — Whisper word boundaries are warped against
+   pitch onsets via a dynamic-programming alignment so each word lands on the
+   pitch attack instead of the model's centroid estimate.
+4. **Lyrics fetching** — Optional synced lyrics from
+   [LRCLIB](https://lrclib.net/) and [Lyrics.ovh](https://lyrics.ovh/).
+5. **Harmony detection** — Configurable presence threshold (default 30%); a
+   pitch line is added to PART HARM2/HARM3 only if it appears in ≥30% of
+   vocal sections.
+
+Output dataclasses (`VocalNote`, `VocalPhrase`) use **seconds** for timestamps,
+not ms — see §6.5.
+
+## 5. Keys Pipeline (`scripts/keys_charter.py`)
+
+1. **Keyboard detection** — Spectral flatness + harmonic ratio analysis on
+   the Demucs `other` stem identifies regions where a keyboard is active.
+2. **Onset detection** — `librosa.onset_detect` over the keyboard-active
+   regions only.
+3. **Pitch extraction** — `librosa.piptrack` per onset window, then Basic
+   Pitch refinement when `STRUM_KEYS_BACKEND=basicpitch`.
+4. **Dual output** — Both 5-lane simplified PART KEYS and full-range PART
+   REAL_KEYS (Pro Keys) are written.
+
+## 6. Tempo Detection & Cross-Instrument Grid Alignment
+
+The single most important system-wide invariant.
+
+### 6.1 BPM Refinement
+
+Initial BPM from `librosa.beat.beat_track`, then a ±5 BPM grid search at
+0.1 BPM resolution. For each candidate BPM we measure phase coherence using
+**circular statistics** on `(onset_time mod beat_period)`, picking the BPM
+with maximum unit-vector magnitude. Reduces grid error from ~175 ms to
+~35 ms on typical tracks.
+
+### 6.2 Phase Offset
+
+Once the BPM is locked, `phase_offset_ms` is the time of the **first
+detected onset** modulo the beat period. This is more robust than the
+circular mean of all onsets, which drifts when the grid-aligned BPM differs
+from the librosa estimate.
+
+### 6.3 The Critical Ordering
+
+Every transcriber emits events on the **raw audio time base** so that the six
+drum rescue passes (§2.3) can index `mc_frame_probs[time_ms * sr / hop]`
+correctly. The phase shift and grid snap happen **after** all rescue passes
+have run, in `transcribe_drums()` and the cross-instrument loop in
+`batch_pipeline.py`.
+
 ```python
-# 4-string bass standard tuning: E1-G4 (41-67 MIDI)
-BASS_FRET_RANGES = {
-    'open':  (0, 44),    # E1 to G#1 → Open/Green
-    'fret1': (45, 49),   # A1 to C#2 → Fret 1/Red
-    'fret2': (50, 54),   # D2 to F#2 → Fret 2/Yellow
-    'fret3': (55, 59),   # G2 to B2  → Fret 3/Blue
-    'fret4': (60, 127),  # C3+       → Fret 4/Orange
-}
+for chart in (drums, guitar.notes, guitar.chords,
+              bass.notes, bass.chords,
+              keys, vocal_phrases, vocal_notes):
+    for ev in chart:
+        ev.time += phase_offset           # ms or seconds per dataclass
+        ev.time = snap_to_grid(ev.time, grid_32nd, roll_window=grid_ms*1.1)
 ```
 
-#### Pitch-to-Fret Mapping (Guitar)
-```python
-# 6-string guitar standard tuning: E2-E6 (40-88 MIDI)
-GUITAR_FRET_RANGES = {
-    'open':  (0, 47),    # E2 to B2  → Open/Green
-    'fret1': (48, 54),   # C3 to F#3 → Fret 1/Red
-    'fret2': (55, 61),   # G3 to C#4 → Fret 2/Yellow
-    'fret3': (62, 68),   # D4 to G#4 → Fret 3/Blue
-    'fret4': (69, 127),  # A4+       → Fret 4/Orange
-}
-```
+### 6.4 Snap-to-Grid with Roll Detection
 
-#### HOPO (Hammer-On/Pull-Off) Detection
-```python
-HOPO_THRESHOLD_MS = 170  # Notes within 170ms are HOPO candidates
+A naive snap collapses fast double-strokes and tom rolls. The snap function
+checks for a same-(lane, is_cymbal) neighbor within
+`_roll_window_ms = grid_ms * 1.1` and skips the snap if one exists, preserving
+rolls.
 
-def is_hopo(prev_note, curr_note):
-    """Determine if current note should be a HOPO."""
-    time_delta = curr_note.time - prev_note.time
-    pitch_changed = curr_note.fret != prev_note.fret
-    
-    return time_delta <= HOPO_THRESHOLD_MS and pitch_changed
-```
+### 6.5 Time-Base Inventory
 
-#### Chord Simplification
-```python
-def simplify_chord(notes, max_notes=2):
-    """Reduce chord to root + highest note."""
-    if len(notes) <= max_notes:
-        return notes
-    
-    sorted_notes = sorted(notes, key=lambda n: n.pitch)
-    return [sorted_notes[0], sorted_notes[-1]]  # Root + highest
-```
+Different transcribers use different time units. The cross-instrument loop
+respects this:
 
-### 5. Vocals Pipeline
+| Dataclass | Time field | Unit |
+|-----------|------------|------|
+| `DrumHit` | `time_ms` | milliseconds |
+| `GuitarNote`, `GuitarChord` | `time_ms` | milliseconds |
+| `KeysNote` | `time_ms` | milliseconds |
+| `VocalNote`, `VocalPhrase` | `start_time`, `end_time` | **seconds** |
 
-#### Lead Melody Extraction
-- Input: Demucs vocal stem
-- Process: Basic Pitch → pitch contour with confidence
-- Output: Monophonic melody line (MIDI note events)
+## 7. Chart Export
 
-#### Harmony Detection
-```python
-def detect_harmonies(pitch_contours, presence_threshold=0.30):
-    """
-    Detect harmony lines from multi-pitch output.
-    
-    Args:
-        pitch_contours: List of detected pitch lines with timestamps
-        presence_threshold: Minimum % of song for harmony inclusion
-        
-    Returns:
-        lead: Primary melody line
-        harmonies: List of harmony lines meeting threshold
-    """
-    # Cluster simultaneous pitches
-    # Identify lead (loudest/most consistent)
-    # Calculate presence ratio for each harmony
-    # Return harmonies exceeding threshold
-```
+### 7.1 MIDI (`src/export/midi.py`)
 
-#### Harmony Presence Calculation
-```python
-def calculate_presence_ratio(harmony_line, vocal_sections):
-    """
-    Calculate what % of vocal sections contain this harmony.
-    
-    Default threshold: 30% (configurable via --harmony-threshold)
-    """
-    harmony_duration = sum(note.duration for note in harmony_line)
-    vocal_duration = sum(section.duration for section in vocal_sections)
-    
-    return harmony_duration / vocal_duration if vocal_duration > 0 else 0
-```
+Standard MIDI File Type 1, 480 ticks per quarter note. Tracks:
 
-### 6. Chart Export (`src/export/`)
+* Track 0 — Tempo map + time signatures
+* Track 1 — Section markers
+* `PART DRUMS` — Pro drums (lanes 96–100, tom markers 110–112)
+* `PART GUITAR` / `PART BASS` — 5-fret (96–100), HOPO/tap modifiers
+* `PART VOCALS` — Pitched phrases + lyric meta-events
+* `PART KEYS` / `PART REAL_KEYS_X` — 5-lane + Pro Keys
 
-#### MIDI Export Format
-- **Type**: Standard MIDI File Type 1 (multiple tracks)
-- **Resolution**: 480 ticks per quarter note
-- **Tracks**:
-  - Track 0: Tempo map + time signatures
-  - Track 1: Song metadata (markers, sections)
-  - Track 2+: Instrument tracks
+### 7.2 Difficulty Generation (`scripts/chart_enhancer.py`)
 
-#### .chart Export Format
-```
-[Song]
-{
-  Name = "Song Title"
-  Artist = "Artist Name"
-  Charter = "STRUM"
-  Resolution = 192
-}
-
-[SyncTrack]
-{
-  0 = TS 4
-  0 = B 120000
-}
-
-[ExpertDrums]
-{
-  0 = N 0 0
-  480 = N 1 0
-  ...
-}
-```
-
-#### Difficulty Generation
-| Difficulty | Max Notes/Sec | Max Chord Size | Special Rules |
-|------------|---------------|----------------|---------------|
+| Difficulty | Notes/sec cap | Max chord size | Notes |
+|------------|---------------|----------------|-------|
 | Expert | 12 | 4 | Full chart |
-| Hard | 9 | 3 | Remove ghost notes |
-| Medium | 6 | 2 | Simplify rolls |
-| Easy | 4 | 1 | Downbeats only |
+| Hard   | 9  | 3 | Drop ghost notes |
+| Medium | 6  | 2 | Simplify rolls |
+| Easy   | 4  | 1 | Downbeats only |
 
-### 7. Dataset Format
+### 7.3 song.ini
 
-#### Manifest Schema (`manifest.json`)
-```json
-{
-  "version": "1.0",
-  "created": "2025-01-05T00:00:00Z",
-  "split": {
-    "train": 0.85,
-    "test": 0.15,
-    "seed": 42
-  },
-  "songs": [
-    {
-      "id": "abc123",
-      "audio_path": "raw/song.mp3",
-      "stems": {
-        "drums": "processed/abc123/drums.wav",
-        "bass": "processed/abc123/bass.wav",
-        "vocals": "processed/abc123/vocals.wav",
-        "other": "processed/abc123/other.wav"
-      },
-      "charts": {
-        "drums": "raw/song/notes.mid",
-        "guitar": "raw/song/notes.mid",
-        "bass": null,
-        "vocals": null
-      },
-      "split": "train",
-      "alignment_offset_ms": -12.5
-    }
-  ],
-  "coverage": {
-    "drums": 4523,
-    "guitar": 4891,
-    "bass": 3102,
-    "vocals": 892,
-    "keys": 234
-  }
-}
+Generated with title, artist, charter (`STRUM`), genre, year, BPM, and
+per-instrument difficulty ratings. Cover art is fetched from the audio file's
+embedded metadata or via the iTunes search API.
+
+## 8. Module Map
+
+```
+src/
+├── models/
+│   ├── drums_v13.py              # TwoStageDrumsCRNN (V14 ckpt)
+│   ├── drums_v14_dataset.py      # Drum onset dataset (bg-mel subtraction)
+│   ├── onset_classifier.py       # 8-lane drum classifier (ensemble member)
+│   ├── onset_classifier_dataset.py, *_cached_dataset.py
+│   ├── tom_refinement.py         # Tom-vs-cymbal CNN
+│   ├── guitar_v1.py              # Guitar onset CRNN (V1/V2)
+│   ├── section_classifier.py     # Per-1s section labeler
+│   ├── bg_mel.py                 # Background-mel subtraction utilities
+│   └── common.py
+├── inference/
+│   ├── guitar_hybrid_v2.py       # ★ Production guitar/bass backend
+│   ├── guitar_neural.py          # Neural-only backend
+│   ├── guitar_bass.py            # Dataclasses + rule backend
+│   ├── section_router.py         # Section-aware onset gating
+│   └── c3_rules.py               # Clone Hero charting conventions
+├── preprocessing/
+│   ├── parsers/                  # .mid + .chart parsers
+│   ├── alignment.py              # Audio-chart alignment (training)
+│   └── separation.py             # Demucs wrapper
+├── export/
+│   ├── midi.py                   # MIDI writer (all parts)
+│   └── chart.py                  # .chart format writer
+└── lyrics/                       # LRCLIB + Lyrics.ovh fetcher
 ```
 
-#### DrumHit Data Structure
-```python
-@dataclass
-class DrumHit:
-    time_ms: float        # Onset time in milliseconds
-    lane: int             # 0=kick, 1=red, 2=yellow, 3=blue, 4=green
-    is_cymbal: bool       # True if cymbal marker present
-    velocity: int         # 1-127 MIDI velocity
-    
-@dataclass  
-class DrumChart:
-    hits: List[DrumHit]
-    tempo_map: List[TempoEvent]
-    time_signatures: List[TimeSignature]
-```
+## 9. Training Inventory
 
-### 8. Evaluation Metrics
+| Model | Trainer | Preprocess | Config |
+|-------|---------|------------|--------|
+| Drum onset CRNN (V14) | `train_onset_classifier.py` | `preprocess_onset_windows.py` | `drums_v14.yaml` |
+| Drum classifier ensemble | `train_onset_classifier.py` | `preprocess_onset_windows.py` | `onset_classifier_*.yaml` |
+| Tom-refinement CNN | `train_tom_refinement.py` | (uses Demucs drum stem) | inline |
+| Guitar onset CRNN (V1/V2) | `train_guitar_v1.py` | `build_guitar_manifest.py` → `preprocess_guitar_windows.py` | `guitar_v1.yaml`, `guitar_v2.yaml` |
+| Pitch→fret mapper (V4) | `train_fret_mapper.py` | `build_mapper_dataset.py` | inline |
+| Section classifier | `train_section_classifier.py` | `build_section_labels.py` → `preprocess_section_windows.py` | inline |
 
-#### Per-Lane Metrics
-- **Onset F1**: Tolerance window ±50ms
-- **Lane Accuracy**: Correct lane assignment given correct onset
-- **Cymbal F1**: Cymbal flag accuracy for yellow/blue/green
+All trainers log to W&B (`WANDB_MODE=offline` to disable). Checkpoints land in
+`checkpoints/<model>/` and are loaded by name by the production scripts.
 
-#### Aggregate Metrics
-- **Overall F1**: Weighted average across lanes
-- **Velocity MAE**: Mean absolute error for velocity prediction
-- **Timing Error**: Mean onset timing deviation in ms
+## 10. Hardware
 
-#### W&B Logging
-```python
-wandb.log({
-    "train/loss": total_loss,
-    "train/onset_loss": onset_loss,
-    "train/cymbal_loss": cymbal_loss,
-    "val/f1_kick": f1_kick,
-    "val/f1_snare": f1_snare,
-    "val/f1_overall": f1_overall,
-    "val/timing_error_ms": timing_error,
-})
-```
-
-## API Contracts
-
-### Preprocessing Pipeline
-```python
-def preprocess(
-    input_dir: Path,
-    output_dir: Path,
-    instruments: List[str] = ["drums"],
-    split_ratio: float = 0.85,
-    seed: int = 42,
-) -> Manifest:
-    """
-    Preprocess raw audio + charts into training-ready dataset.
-    
-    Returns:
-        Manifest with paths and metadata for all processed songs.
-    """
-```
-
-### Training Pipeline
-```python
-def train(
-    config_path: Path,
-    manifest_path: Path,
-    checkpoint_path: Optional[Path] = None,
-) -> None:
-    """
-    Train drums model with W&B logging.
-    
-    Saves checkpoints to config.output_dir every N epochs.
-    """
-```
-
-### Inference Pipeline
-```python
-def infer(
-    audio_path: Path,
-    model_path: Path,
-    output_path: Path,
-    harmony_threshold: float = 0.30,
-) -> None:
-    """
-    Generate chart from audio file.
-    
-    Outputs .mid file with all detected instruments.
-    """
-```
+Developed on NVIDIA DGX Spark (GB10 GPU, CUDA 12.8). Inference runs in
+~real-time on a single 12 GB GPU; training one drum classifier takes
+~6–8 hours on the same hardware.

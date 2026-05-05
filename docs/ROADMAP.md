@@ -1,181 +1,51 @@
 # STRUM Roadmap
 
-## Project Status: Active Development
+## Status
 
-**Start Date**: January 2026  
-**Current Phase**: Milestone 1 - Pro Drums Pipeline
+The core pipeline is **production**: drums + guitar + bass + vocals + keys all
+generate playable Clone Hero / YARG charts with cross-instrument grid
+alignment. Verified on a held-out test set of 9 paired audio + ground-truth
+chart pairs (see `docs/ARCHITECTURE.md` and the Performance section in
+[README.md](../README.md)).
 
----
+## Shipped
 
-## Milestone 1: Pro Drums Pipeline ✅ IN PROGRESS
+- ✅ Two-stage drum onset detector + ensemble lane classifier (8 lanes)
+- ✅ Six audio-coupled rescue passes (onset / cymbal / tom / drumsep)
+- ✅ Hybrid guitar & bass (V2 onset CRNN + Spotify Basic Pitch + fret mapping)
+- ✅ Whisper + pYIN vocal pipeline with LRCLIB lyrics
+- ✅ Spectral keyboard detection with Pro Keys output
+- ✅ Cross-instrument BPM refinement + phase shift + 32nd-note snap with
+  per-lane roll detection
+- ✅ Difficulty reduction (Expert / Hard / Medium / Easy)
+- ✅ Clone Hero / YARG packaging (`notes.mid`, `song.ini`, album art)
+- ✅ Backend selection via env vars (`STRUM_GUITAR_BACKEND`,
+  `STRUM_BASS_BACKEND`, `STRUM_FRET_MAPPER`, `STRUM_V12C_VARIANT`)
+- ✅ Training pipelines for every model with W&B logging
 
-**Goal**: End-to-end pipeline for generating pro-drums charts from audio.
+## In Flight
 
-### Tasks
+- 🔄 Per-instrument benchmark harness (drums F1 verified; guitar / bass /
+  vocals / keys numbers being collected on the GT test set)
+- 🔄 Hugging Face Hub model release (`opria123/strum`)
+- 🔄 OCTAVE chart-editor integration
 
-- [x] Project scaffolding (repo structure, pyproject.toml, Docker)
-- [x] Context documentation (.github/copilot-instructions.md, ARCHITECTURE.md)
-- [ ] Chart parsers (.mid and .chart formats)
-- [ ] Demucs integration for stem separation
-- [ ] Audio-chart alignment via cross-correlation
-- [ ] Preprocessing CLI (`strum preprocess`)
-- [ ] Dataset manifest generation with 85/15 split
-- [ ] CRNN model architecture for pro drums
-- [ ] Training loop with W&B integration
-- [ ] Checkpoint saving (every 5 epochs + best)
-- [ ] Drums inference pipeline
-- [ ] .mid export with pro drums mapping
-- [ ] Validation on held-out test set
+## Planned
 
-### Success Criteria
-- [ ] Model achieves >80% lane-wise F1 on test set
-- [ ] Output charts load correctly in YARG
-- [ ] Full pipeline runs via CLI commands
-- [ ] Training reproducible with Docker
+- ☐ Whitepaper writeup (problem framing, alignment story, results,
+  limitations)
+- ☐ Streaming inference mode (chunked Demucs + incremental rescue passes)
+- ☐ Pro Guitar (string + fret inference, not just 5-fret)
+- ☐ Web demo (Hugging Face Space) — drag-and-drop a song, get a chart
+- ☐ Genre-specific drum classifier variants (metal, jazz, electronic)
+- ☐ Multi-take training data from charter community
 
----
+## Hardware
 
-## Milestone 2: Guitar & Bass Pipeline 🔜 PLANNED
+- **Training**: NVIDIA DGX Spark (GB10, 12 GB)
+- **Inference**: any CUDA GPU; CPU works but ~10× slower
 
-**Goal**: Rule-based reduction from Basic Pitch AMT to 5-fret game format.
+## Tracking
 
-### Tasks
-
-- [ ] Basic Pitch integration on bass stem
-- [ ] Basic Pitch integration on "other" stem
-- [ ] Guitar vs keys classification heuristics
-- [ ] Guitar-priority logic (keys only when guitar silent)
-- [ ] Pitch-to-fret mapping rules
-- [ ] HOPO detection (170ms threshold)
-- [ ] Chord simplification rules
-- [ ] Open-note assignment logic
-- [ ] Validation against existing guitar/bass charts
-- [ ] Rule threshold tuning
-
-### Success Criteria
-- [ ] >75% agreement with human-charted guitar/bass
-- [ ] HOPO placement matches charting conventions
-- [ ] No unplayable note patterns generated
-
----
-
-## Milestone 3: Vocals Pipeline 🔜 PLANNED
-
-**Goal**: Lead melody + conditional harmony extraction.
-
-### Tasks
-
-- [ ] Basic Pitch on vocal stem
-- [ ] Lead melody extraction (loudest/most consistent)
-- [ ] Harmony line clustering
-- [ ] Presence ratio calculation
-- [ ] Configurable harmony threshold (default 30%)
-- [ ] Phrase detection for lyric alignment (future)
-- [ ] Validation against existing vocal charts
-
-### Success Criteria
-- [ ] Lead melody accuracy >80% on charted songs
-- [ ] Harmonies included only when meaningfully present
-- [ ] Smooth pitch contours (no jitter)
-
----
-
-## Milestone 4: Pro Keys Pipeline 🔜 PLANNED
-
-**Goal**: Direct AMT-to-chart mapping for piano/keys.
-
-### Tasks
-
-- [ ] MT3 or Onsets & Frames integration
-- [ ] Keys extraction from "other" stem
-- [ ] Velocity preservation
-- [ ] Full-range pro keys MIDI output
-- [ ] Validation against pro keys charts
-
-### Success Criteria
-- [ ] Reasonable transcription on clear piano sections
-- [ ] No major timing drift
-- [ ] Velocity dynamics preserved
-
----
-
-## Milestone 5: Difficulty Generation 🔜 PLANNED
-
-**Goal**: Generate Expert/Hard/Medium/Easy from canonical charts.
-
-### Tasks
-
-- [ ] Density caps per difficulty level
-- [ ] Note thinning algorithms
-- [ ] Chord simplification per difficulty
-- [ ] Ghost note removal for lower difficulties
-- [ ] Drum roll simplification
-- [ ] HOPO preservation rules
-- [ ] Star Power phrase placement
-- [ ] Per-instrument difficulty configs
-
-### Success Criteria
-- [ ] All difficulties playable and reasonable
-- [ ] Smooth progression from Easy to Expert
-- [ ] No illegal note patterns
-
----
-
-## Milestone 6: Polish & Whitepaper 🔜 PLANNED
-
-**Goal**: Production-ready release with documentation.
-
-### Tasks
-
-- [ ] Batch processing CLI (`strum batch`)
-- [ ] Progress bars and error handling
-- [ ] HTML/Markdown evaluation reports
-- [ ] Docker multi-service compose (preprocess/train/infer)
-- [ ] README with quickstart guide
-- [ ] WHITEPAPER.md (problem, methodology, results, limitations)
-- [ ] Architecture diagrams for whitepaper
-- [ ] Sample outputs and audio/MIDI comparisons
-- [ ] Performance benchmarks (GPU utilization, throughput)
-- [ ] GitHub release with versioned models
-
-### Success Criteria
-- [ ] Full pipeline usable by someone with just the README
-- [ ] Whitepaper suitable for blog post or portfolio
-- [ ] Docker images published to registry
-- [ ] Clean git history with meaningful commits
-
----
-
-## Future Ideas (Post v1.0)
-
-- [ ] Web UI for drag-and-drop charting
-- [ ] Real-time preview in browser
-- [ ] Custom model fine-tuning interface
-- [ ] Genre-specific model variants
-- [ ] Lyrics alignment for vocals
-- [ ] Section detection (intro/verse/chorus)
-- [ ] Automatic BPM detection improvements
-- [ ] Pro guitar (string/fret inference)
-- [ ] Community model sharing
-
----
-
-## Metrics & Tracking
-
-### Weights & Biases Project
-- **Project**: `strum`
-- **Runs**: Tagged by milestone (drums-v1, guitar-v1, etc.)
-
-### Key Metrics to Track
-| Instrument | Primary Metric | Target |
-|------------|---------------|--------|
-| Drums | Lane-wise F1 | >80% |
-| Guitar | Chart agreement | >75% |
-| Bass | Chart agreement | >75% |
-| Vocals | Pitch accuracy | >80% |
-| Keys | Note F1 | >70% |
-
-### Hardware Requirements
-- **Training**: NVIDIA RTX 4080 (16GB VRAM)
-- **Inference**: CUDA GPU or CPU (slower)
-- **Storage**: ~500GB for full dataset + stems
+W&B project: `strum`. Runs are tagged by model family
+(`drums-v14-*`, `onset-classifier-v15-*`, `guitar-v2-*`, etc.).
