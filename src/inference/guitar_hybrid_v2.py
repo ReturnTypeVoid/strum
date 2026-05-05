@@ -132,15 +132,79 @@ class PitchToFretMapper:
             arr = np.array(all_pitches, dtype=np.float32)
             self.p_lo = float(np.percentile(arr, 5))
             self.p_hi = float(np.percentile(arr, 95))
+        # STABILITY: enforce a minimum pitch range so each fret bin is at
+        # least 3 semitones wide. Without this, narrow-range songs (verses
+        # with consistent strumming on 1-2 notes) had bin widths < 1 semitone
+        # — basic-pitch's normal ±1 semitone jitter then pushed the same
+        # sung note across multiple frets every onset.
+        min_range = 15.0
+        if (self.p_hi - self.p_lo) < min_range:
+            mid = (self.p_lo + self.p_hi) / 2.0
+            self.p_lo = mid - min_range / 2.0
+            self.p_hi = mid + min_range / 2.0
         self.p_range = max(self.p_hi - self.p_lo, 1.0)
         self.anchor_strength = anchor_strength
         self._last_frets: tuple[int, ...] = ()
+        # SOFT cache: pitch -> (fret, last_call_idx). Used as an *advisory*:
+        # if the freshly-binned fret is within ±1 of the cached fret, snap
+        # to the cached value (kills basic-pitch ±1 semitone jitter on the
+        # same note). Otherwise honour the fresh bin and update the cache.
+        # This preserves real movement (riffs, runs, key changes) while
+        # still removing the cross-fret jumping that hurt v10/v11/v12.
+        self._pitch_fret_cache: dict[int, tuple[int, int]] = {}
+        self._call_idx: int = 0
+        self._last_call_t: float | None = None
+        # Cache TTL in calls: entries older than this are forgotten so the
+        # mapper adapts as the song's register shifts (verse → solo).
+        self._cache_ttl_calls: int = 32
+        # Section-break gap in seconds: a long silence resets the cache so
+        # the next section starts fresh (a guitar solo following a quiet
+        # bridge no longer inherits verse fret bindings).
+        self._section_gap_s: float = 1.5
+
+    def note_time(self, t_seconds: float) -> None:
+        """Inform the mapper of the current onset time. If the time gap
+        since the previous onset exceeds the section threshold, the cache
+        is cleared so the next section maps from a clean slate."""
+        if self._last_call_t is not None and (t_seconds - self._last_call_t) > self._section_gap_s:
+            self._pitch_fret_cache.clear()
+        self._last_call_t = t_seconds
 
     def _pitch_to_fret(self, pitch: int) -> int:
-        """Linear bin into 5 frets."""
+        """Linear bin into 5 frets with soft, time-aware caching.
+
+        Algorithm:
+          1. Compute the fresh linear bin for this pitch.
+          2. Look up the cache for pitch and pitch±1 (still ±1 tolerant —
+             an upstroke is often transcribed at P±1).
+          3. If cache hit and |fresh - cached| <= 1 → return cached
+             (snap nearby, kill jitter).
+          4. Otherwise return fresh and update cache (allow real movement).
+          5. Cache entries older than `_cache_ttl_calls` are ignored.
+        """
+        p = int(pitch)
+        self._call_idx += 1
         norm = (pitch - self.p_lo) / self.p_range
         norm = max(0.0, min(1.0, norm))
-        return int(round(norm * 4))
+        fresh = int(round(norm * 4))
+        # Look up cache (±1 semitone tolerant), respecting TTL
+        for dp in (0, -1, 1):
+            entry = self._pitch_fret_cache.get(p + dp)
+            if entry is None:
+                continue
+            cached_fret, when = entry
+            if (self._call_idx - when) > self._cache_ttl_calls:
+                continue
+            if abs(fresh - cached_fret) <= 1:
+                # Snap to cached, refresh timestamp
+                self._pitch_fret_cache[p] = (cached_fret, self._call_idx)
+                return cached_fret
+            else:
+                # Real movement — break the cache for this pitch
+                break
+        # Use fresh value and (re)cache
+        self._pitch_fret_cache[p] = (fresh, self._call_idx)
+        return fresh
 
     def map(self, pitches: list[int]) -> tuple[int, ...]:
         if not pitches:
@@ -225,14 +289,95 @@ def snap_pitches_to_onsets(
     return buckets
 
 
+# ─────────────────────────── Learned fret mapper bridge ─────────────────────
+_LEARNED_MAPPER_CACHE: dict = {}
+
+
+def _learned_fret_mapping(
+    onset_times: np.ndarray,
+    buckets: list[list[PitchNote]],
+) -> list[tuple[int, ...]]:
+    """Map (CRNN onsets, BP pitch buckets) → fret subsets via learned MLP+Viterbi.
+
+    Uses the same featurizer as scripts/guitar_basicpitch.py so the v4 MLP
+    weights apply directly. Falls back to a flat (0,) sequence if anything
+    in the learned pipeline fails — caller still has the rule-based mapper
+    available as backup.
+    """
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
+    _scripts = str(_Path(__file__).resolve().parent.parent.parent / "scripts")
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    from guitar_basicpitch import _LearnedMapper, _featurize_onsets_for_learned  # noqa
+    from viterbi_fret_decode import viterbi_decode  # noqa
+
+    ckpt = _os.environ.get(
+        "STRUM_GUITAR_LEARNED_CKPT", "checkpoints/fret_mapper_v4.pt"
+    )
+    if ckpt not in _LEARNED_MAPPER_CACHE:
+        _LEARNED_MAPPER_CACHE[ckpt] = _LearnedMapper(ckpt)
+    mapper = _LEARNED_MAPPER_CACHE[ckpt]
+
+    # Build the onset list expected by the featurizer.
+    onsets: list[dict] = []
+    for t, bucket in zip(onset_times, buckets):
+        if not bucket:
+            onsets.append({"time": float(t), "pitches": [],
+                           "amps": [], "durations": []})
+            continue
+        onsets.append({
+            "time": float(t),
+            "pitches": [int(n.midi) for n in bucket],
+            "amps": [float(n.amplitude) for n in bucket],
+            "durations": [float(getattr(n, "duration", n.t_end - n.t_start))
+                          for n in bucket],
+        })
+
+    if not onsets:
+        return []
+
+    P = mapper.predict_proba(onsets)
+    times = np.asarray([o["time"] for o in onsets], dtype=np.float32)
+    use_vit = _os.environ.get("STRUM_GUITAR_VITERBI", "1") != "0"
+    if use_vit:
+        seq = viterbi_decode(
+            P, times=times,
+            fret_change_w=float(_os.environ.get("STRUM_GUITAR_VIT_FC", "0.20")),
+            center_jump_w=float(_os.environ.get("STRUM_GUITAR_VIT_CJ", "0.03")),
+            chord_switch_w=float(_os.environ.get("STRUM_GUITAR_VIT_CS", "0.10")),
+            same_state_bonus=float(_os.environ.get("STRUM_GUITAR_VIT_SB", "0.10")),
+            time_decay_tau=float(_os.environ.get("STRUM_GUITAR_VIT_TAU", "0.8")),
+        )
+    else:
+        thr = float(_os.environ.get("STRUM_GUITAR_LEARNED_THR", "0.5"))
+        seq = []
+        for row in P:
+            f = tuple(i for i, v in enumerate(row) if v >= thr)
+            if not f:
+                f = (int(row.argmax()),)
+            seq.append(f)
+    # Empty buckets: drop to fallback single open string so downstream
+    # filter_empty preserves expected count (the rule mapper would have
+    # produced (0,) too via _last_frets fallback).
+    cleaned: list[tuple[int, ...]] = []
+    for ons, frets in zip(onsets, seq):
+        if not ons["pitches"]:
+            cleaned.append((0,))
+        else:
+            cleaned.append(tuple(sorted(int(f) for f in frets)))
+    return cleaned
+
+
 # ─────────────────────────── Dominant-voice filter ──────────────────────────
 def filter_dominant_voice(
     buckets: list[list[PitchNote]],
     all_notes: list[PitchNote],
-    lead_percentile: float = 80.0,
-    lead_min_fraction: float = 0.08,
-    lead_separation_semitones: int = 7,
-    lead_amp_ratio: float = 1.2,
+    lead_percentile: float = 75.0,
+    lead_min_fraction: float = 0.05,
+    lead_separation_semitones: int = 5,
+    lead_amp_ratio: float = 0.85,
     max_lead_notes: int = 2,
 ) -> list[list[PitchNote]]:
     """Pick the perceptually-dominant voice at each onset.
@@ -262,29 +407,78 @@ def filter_dominant_voice(
     if lead_fraction < lead_min_fraction:
         return buckets
 
-    out: list[list[PitchNote]] = []
+    # Pass 1: per-onset analysis. For each bucket compute (lead_notes,
+        # has_qualifying_lead) where lead qualifies if pitch-gap OR amp-ratio
+        # gate passes (loose: catches leads even at sub-octave separations).
+    n_onsets = len(buckets)
+    lead_per_onset: list[list[PitchNote]] = []
+    has_lead: list[bool] = []
     for bucket in buckets:
         if not bucket:
-            out.append(bucket)
+            lead_per_onset.append([])
+            has_lead.append(False)
             continue
         lead_notes = sorted(
             [n for n in bucket if n.midi >= lead_threshold],
             key=lambda n: -n.midi,
         )
         rhythm_notes = [n for n in bucket if n.midi < lead_threshold]
-        if not lead_notes or not rhythm_notes:
-            out.append(bucket)
+        if not lead_notes:
+            lead_per_onset.append([])
+            has_lead.append(False)
+            continue
+        if not rhythm_notes:
+            # Pure lead bucket
+            lead_per_onset.append(lead_notes[:max_lead_notes])
+            has_lead.append(True)
             continue
         top_lead = lead_notes[0]
         top_rhythm_midi = max(n.midi for n in rhythm_notes)
         max_rhythm_amp = max(n.amplitude for n in rhythm_notes)
-        # Both gates must pass
         pitch_gap_ok = (top_lead.midi - top_rhythm_midi) >= lead_separation_semitones
         amp_ok = top_lead.amplitude >= lead_amp_ratio * max_rhythm_amp
-        if pitch_gap_ok and amp_ok:
-            out.append(lead_notes[:max_lead_notes])
+        if pitch_gap_ok or amp_ok:
+            lead_per_onset.append(lead_notes[:max_lead_notes])
+            has_lead.append(True)
         else:
-            out.append(bucket)
+            lead_per_onset.append([])
+            has_lead.append(False)
+
+    # Pass 2: section detection. An onset is in a "lead-dominant section"
+    # if a window of ±8 onsets around it contains ≥3 lead-bearing onsets
+    # AND ≥35% of non-empty buckets in the window have lead. This anchors
+    # us to lead during sections like solos / lead lines, where rhythm
+    # rests for a beat would otherwise cause us to flip back to rhythm
+    # and produce overcharted fret-sweep artifacts.
+    window = 8
+    in_lead_section: list[bool] = [False] * n_onsets
+    for i in range(n_onsets):
+        lo = max(0, i - window)
+        hi = min(n_onsets, i + window + 1)
+        leads = sum(1 for j in range(lo, hi) if has_lead[j])
+        non_empty = sum(1 for j in range(lo, hi) if buckets[j])
+        if leads >= 3 and non_empty > 0 and leads / non_empty >= 0.35:
+            in_lead_section[i] = True
+
+    # Pass 3: emit. Behaviour by region:
+    #   * lead-dominant section + this onset has lead → chart lead only
+    #   * lead-dominant section + no lead this onset → SKIP (empty bucket)
+    #     Prevents "flip to rhythm on lead rests" → the source of the
+    #     fret-sweeping during dual-guitar sections.
+    #   * outside lead section, this onset has clear lead → chart lead only
+    #   * otherwise → pass bucket through (preserve chords/rhythm)
+    out: list[list[PitchNote]] = []
+    for i, bucket in enumerate(buckets):
+        if in_lead_section[i]:
+            if has_lead[i]:
+                out.append(lead_per_onset[i])
+            else:
+                out.append([])  # drop onset; lead is resting
+        else:
+            if has_lead[i] and lead_per_onset[i]:
+                out.append(lead_per_onset[i])
+            else:
+                out.append(bucket)
     return out
 
 
@@ -366,12 +560,16 @@ class GuitarHybridV2Charter:
         min_pitch_amplitude: float = 0.3,
         sustain_min_duration_s: float = 0.40,
         max_chord_size: int = 3,
+        harmonic_collapse: bool = False,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
 
         Args:
             audio: mono float32 @ 22050 Hz (used for V2 onset model)
             audio_path: path to original audio file (used by basic-pitch)
+            harmonic_collapse: if True, collapse octave-doubled pitches at each
+                onset to just the lowest. Use for bass where basic-pitch often
+                detects root+octave harmonics as separate "notes".
         """
         # Stage 1: onsets
         onset_times = self.detect_onsets(audio, threshold=onset_threshold)
@@ -382,21 +580,60 @@ class GuitarHybridV2Charter:
         # Stage 3: snap
         buckets = snap_pitches_to_onsets(onset_times, notes, snap_window_s)
 
+        # Stage 3a: harmonic collapse (bass): if a bucket contains pitches
+        # P and P+12 (or P+24), keep only P. basic-pitch routinely detects
+        # bass overtones as separate "notes", which produced false octave
+        # double-stops on bass charts.
+        if harmonic_collapse:
+            collapsed: list[list[PitchNote]] = []
+            for bucket in buckets:
+                if len(bucket) <= 1:
+                    collapsed.append(bucket)
+                    continue
+                by_pitch: dict[int, PitchNote] = {}
+                for n in bucket:
+                    if n.midi not in by_pitch or n.amplitude > by_pitch[n.midi].amplitude:
+                        by_pitch[n.midi] = n
+                pitches_sorted = sorted(by_pitch.keys())
+                roots: list[int] = []
+                for p in pitches_sorted:
+                    if any((p - r) % 12 == 0 and p != r for r in roots):
+                        continue  # octave of an existing root
+                    roots.append(p)
+                collapsed.append([by_pitch[p] for p in roots])
+            buckets = collapsed
+
         # Stage 3b: dominant-voice filter — at onsets where a lead overdub
         # sits clearly above the rhythm chord, chart only the lead. Songs
         # with no lead-register activity are passed through unchanged.
         import os as _os
+        # Snapshot the pre-filter buckets so the learned mapper sees the
+        # full pitch context (PC-histogram + chord-shape signal). The
+        # voice filter strips chord pitches down to 1-2 notes which causes
+        # the MLP to under-predict chords.
+        buckets_full = [list(b) for b in buckets]
         if _os.environ.get("STRUM_GUITAR_VOICE_FILTER", "1") == "1":
             buckets = filter_dominant_voice(buckets, notes)
 
-        # Stage 4: build mapper from all transcribed pitches
+        # Stage 4: build mapper from all transcribed pitches.
+        # STRUM_GUITAR_FRET_MAPPER=learned uses the trained MLP fret-mapper
+        # (checkpoints/fret_mapper_v4.pt) + Viterbi smoothing in place of
+        # the rule-based PitchToFretMapper. The mapper consumes the same
+        # CRNN onsets the rule path uses, so onset count is preserved.
+        learned_frets: list[tuple[int, ...]] | None = None
+        if _os.environ.get("STRUM_GUITAR_FRET_MAPPER", "learned").lower() == "learned" and not harmonic_collapse:
+            learned_frets = _learned_fret_mapping(onset_times, buckets_full)
         mapper = PitchToFretMapper([n.midi for n in notes])
 
         # Stage 5: assemble events
         events: list[GuitarEvent] = []
-        for t, bucket in zip(onset_times, buckets):
+        for ev_idx, (t, bucket) in enumerate(zip(onset_times, buckets)):
+            mapper.note_time(float(t))
             pitches = [n.midi for n in bucket]
-            frets = mapper.map(pitches)
+            if learned_frets is not None:
+                frets = learned_frets[ev_idx]
+            else:
+                frets = mapper.map(pitches)
             if not frets:
                 continue
             # Cap chord size: sections with multiple guitars cause basic-pitch
@@ -497,16 +734,44 @@ def transcribe_guitar_hybrid(
     is_bass: bool = False,
     onset_threshold: float | None = None,
     device: str | None = None,
+    max_chord_size: int | None = None,
+    harmonic_collapse: bool | None = None,
 ):
     """Hybrid V2 (V2 onset CRNN + basic-pitch + rule pitch→fret) → GuitarChart.
 
     Drop-in replacement for transcribe_guitar_neural; same return type.
+
+    For bass, defaults flip: max_chord_size=1 (singles only — real bass chords
+    are rare and basic-pitch's polyphonic detection tends to false-positive
+    on harmonics) and harmonic_collapse=True (collapse octave overtones).
     """
     import librosa as _lr
     from src.inference.guitar_bass import GuitarChart, GuitarNote, GuitarChord
 
+    if max_chord_size is None:
+        max_chord_size = 1 if is_bass else 3
+    if harmonic_collapse is None:
+        harmonic_collapse = bool(is_bass)
+
     audio_path = Path(audio_path)
     audio, sr = _lr.load(str(audio_path), sr=22050, mono=True)
+
+    # RMS normalization — Demucs stems vary ~200× in level (some bass stems
+    # come out at -80dB, far below the level the onset CRNN was trained on,
+    # which yields zero peaks above any reasonable threshold). Normalize to
+    # a target RMS so onset detection is stem-loudness-invariant. We do this
+    # on a copy fed to the model only; basic-pitch is run on the file path
+    # directly (it's amplitude-relative internally).
+    rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    target_rms = 0.05
+    if rms > 1e-8 and rms < target_rms:
+        gain = min(target_rms / rms, 500.0)  # cap at +54dB
+        audio = (audio * gain).astype(np.float32)
+        # Soft-clip to prevent integer overflow / NaN downstream
+        peak = float(np.abs(audio).max())
+        if peak > 1.0:
+            audio = (audio / peak).astype(np.float32)
+
     if tempo_bpm <= 0:
         try:
             tempo_fn = getattr(_lr.beat, "tempo", None) or _lr.feature.rhythm.tempo
@@ -515,7 +780,12 @@ def transcribe_guitar_hybrid(
             tempo_bpm = 120.0
 
     ch = _get_hybrid_charter(device=device)
-    events = ch.transcribe(audio, audio_path, onset_threshold=onset_threshold)
+    events = ch.transcribe(
+        audio, audio_path,
+        onset_threshold=onset_threshold,
+        max_chord_size=max_chord_size,
+        harmonic_collapse=harmonic_collapse,
+    )
 
     chart = GuitarChart(
         tempo_bpm=float(tempo_bpm),

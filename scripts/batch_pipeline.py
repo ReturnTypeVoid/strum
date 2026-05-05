@@ -235,12 +235,20 @@ class BatchPipeline:
         y, sr = librosa.load(str(audio_path), sr=22050, mono=True)
         duration_sec = len(y) / sr
         
-        # Use grid-alignment BPM refinement from drums pipeline if available
+        # Use grid-alignment BPM refinement from drums pipeline if available.
+        # IMPORTANT: also propagate phase_offset_ms and the multi-segment
+        # tempo_events list so chart timing aligns with the audio. Without
+        # phase alignment, bar lines render at a fixed offset from
+        # downbeats and notes drift visibly off-beat against the backing track.
+        phase_offset_ms = 0.0
+        tempo_events_full = None
         try:
             from batch_infer_hybrid import analyze_audio as drums_analyze
             audio_info = drums_analyze(audio_path)
             tempo = audio_info["tempo_bpm"]
-            logger.info(f"  BPM (grid-aligned): {tempo:.1f}")
+            phase_offset_ms = float(audio_info.get("phase_offset_ms", 0.0))
+            tempo_events_full = audio_info.get("tempo_events", None)
+            logger.info(f"  BPM (grid-aligned): {tempo:.1f}  phase_offset={phase_offset_ms:.1f}ms")
         except Exception:
             # Fallback: librosa.feature.rhythm.tempo (not beat_track which gives subharmonics)
             tempo = librosa.feature.rhythm.tempo(y=y, sr=sr)
@@ -275,6 +283,8 @@ class BatchPipeline:
             'duration_ms': int(duration_sec * 1000),
             'duration_sec': duration_sec,
             'preview_start_ms': int(preview_sec * 1000),
+            'phase_offset_ms': phase_offset_ms,
+            'tempo_events': tempo_events_full,
             'album': metadata.get('album', ''),
             'year': metadata.get('year', ''),
             'genre': metadata.get('genre', ''),
@@ -484,11 +494,23 @@ class BatchPipeline:
 
         return stems
     
-    def transcribe_drums(self, drums_stem: Path, tempo_bpm: float):
+    def transcribe_drums(self, drums_stem: Path, tempo_bpm: float,
+                         song_folder: Path | None = None,
+                         phase_offset_ms: float = 0.0):
         """Transcribe drums using the production batch_infer_hybrid pipeline.
 
         Mirrors `batch_infer_hybrid.process_song` post-separation flow so that
         batch_pipeline drums quality matches the standalone production pipeline.
+
+        Args:
+            phase_offset_ms: Audio phase offset.  Hits are shifted by this
+                amount BEFORE quantization so that postprocess snaps them to
+                a grid anchored at MIDI tick 0 (= bar 1 in Clone Hero).
+                Without this, postprocess auto-derives its own grid origin
+                from hit times, the audio is trimmed by phase_offset_ms
+                later, and the two grids drift out of phase by up to half
+                a 96th-note (≈15 ms at 84 BPM) — visible as notes sitting
+                slightly in front of or behind the bar lines in CH editors.
         """
         if not self.include_drums:
             return None
@@ -501,13 +523,18 @@ class BatchPipeline:
                 logger.warning("  ⚠ Drums models not loaded, skipping")
                 return None
 
+            import os
             from batch_infer_hybrid import (
                 detect_onsets_v14, extract_onset_windows, classify_onsets_ensemble,
                 build_context_vectors, build_chart, postprocess_chart,
                 _compute_spectral_centroid_features, _compute_onset_rms,
                 run_phase3_inference, phase3_reclassify, phase3_onset_rescue,
                 phase3_cymbal_cooccurrence_rescue, spectral_reclassify,
-                apply_tom_refinement_filter,
+                apply_tom_refinement_filter, apply_cymbal_to_tom_rescue,
+                separate_drums_6stem, apply_drumsep_lane_arbiter,
+                apply_drumsep_hits_arbiter,
+                apply_snare_in_hh_roll_veto, apply_crash_ride_costack_veto,
+                compute_spectral_features, apply_spectral_reclassification,
                 DEFAULT_CLASS_THRESHOLDS,
                 PHASE3_RECLASS_ENABLED, PHASE3_RESCUE_ENABLED,
                 PHASE3_COOCCURRENCE_ENABLED, SPECTRAL_RECLASS_ENABLED,
@@ -559,6 +586,34 @@ class BatchPipeline:
                 )
                 onset_rms = _compute_onset_rms(drums_stem, onset_times_ms)
 
+                # 6-stem drumsep arbiter on PROBS (v25 critical step):
+                # ≥98% Tom→Cym fix-rate. Reads/writes demucs_temp/stems_6/.
+                stems_dir = None
+                if song_folder is not None and os.environ.get("STRUM_USE_DRUMSEP", "1") == "1":
+                    try:
+                        stems_dir = separate_drums_6stem(drums_stem, song_folder)
+                        if stems_dir is not None:
+                            probs = apply_drumsep_lane_arbiter(
+                                probs, onset_times_ms, stems_dir,
+                                win_ms=float(os.environ.get("STRUM_DRUMSEP_WIN_MS", "50")),
+                                margin_db=float(os.environ.get("STRUM_DRUMSEP_MARGIN_DB", "20")),
+                                toms_floor_db=float(os.environ.get("STRUM_DRUMSEP_TOMS_FLOOR_DB", "-40")),
+                            )
+                    except Exception as _e:
+                        logger.warning(f"    Drumsep prob arbiter failed: {_e}")
+
+                # Fill-aware cymbal→tom rescue on PROBS (v25 critical step)
+                if os.environ.get("STRUM_FILL_RESCUE", "1") == "1":
+                    try:
+                        spectral_lr = compute_spectral_features(drums_stem, onset_times_ms)
+                        probs = apply_spectral_reclassification(
+                            probs, spectral_lr, onset_times_ms,
+                            tom_ratio_threshold=float(os.environ.get("STRUM_FILL_TOM_RATIO", "5.0")),
+                            transfer_pct=float(os.environ.get("STRUM_FILL_TRANSFER", "0.4")),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"    Fill rescue failed: {_e}")
+
                 # Build chart with production thresholds
                 chart = build_chart(
                     onset_times_ms, probs, windows["valid_mask"],
@@ -571,9 +626,44 @@ class BatchPipeline:
                     v14_class_probs=v14_class_probs,
                 )
 
-            # Post-processing
+            def _trace(stage: str):
+                if os.environ.get("STRUM_TRACE_TOM_CHORDS", "0") != "1":
+                    return
+                from collections import Counter
+                buckets = Counter()
+                examples = []
+                hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+                i = 0
+                while i < len(hits_sorted):
+                    j = i
+                    grp = [hits_sorted[i]]
+                    while j + 1 < len(hits_sorted) and hits_sorted[j+1].time_ms - hits_sorted[i].time_ms < 5.0:
+                        j += 1
+                        grp.append(hits_sorted[j])
+                    toms = [h for h in grp if not h.is_cymbal and h.lane in (2,3,4)]
+                    if len(toms) >= 2:
+                        buckets[tuple(sorted(h.lane for h in toms))] += 1
+                        if len(examples) < 5:
+                            examples.append((grp[0].time_ms, [(h.lane, 'C' if h.is_cymbal else 'T') for h in grp]))
+                    i = j + 1
+                logger.info(f"  [TRACE {stage}] tom-chord groups: {dict(buckets)} (total={sum(buckets.values())}); ex: {examples[:3]}")
+
+            _trace("after_build_chart")
+
+            # NOTE: phase pre-shift was moved to AFTER all rescue/refinement
+            # passes.  Doing it before postprocess broke every audio-coupled
+            # pass (phase3_onset_rescue, phase3_cymbal_cooccurrence_rescue,
+            # apply_cymbal_to_tom_rescue, apply_drumsep_hits_arbiter,
+            # spectral_reclassify, apply_tom_refinement_filter) because
+            # they index `mc_frame_probs[hit.time_ms * sr / hop]` — once
+            # hit.time_ms is shifted by -phase_offset_ms, those passes
+            # sample audio at the wrong frame, giving false rescues
+            # (overcharting) and adding new hits at raw audio frame times
+            # (un-shifted, so visibly off the rest of the chart).
+            # Post-processing runs on ORIGINAL audio times.
             if chart.hits:
                 chart = postprocess_chart(chart)
+            _trace("after_postprocess")
 
             # Phase 3 reclassification + onset rescue + co-occurrence rescue
             phase3_probs = None
@@ -585,14 +675,63 @@ class BatchPipeline:
                 chart = phase3_onset_rescue(chart, phase3_probs)
             if phase3_probs is not None and PHASE3_COOCCURRENCE_ENABLED:
                 chart = phase3_cymbal_cooccurrence_rescue(chart, phase3_probs)
+            _trace("after_phase3")
 
             # Spectral reclassification (HiHat↔Snare, Crash↔Ride)
             if SPECTRAL_RECLASS_ENABLED and chart.hits:
                 chart = spectral_reclassify(chart, drums_stem)
+            _trace("after_spectral_reclassify")
 
             # Tom refinement filter (verifies all tom hits, flips false-positives)
             if tom_refinement is not None:
                 chart = apply_tom_refinement_filter(chart, drums_stem, tom_refinement, device)
+                # Symmetric rescue: cymbals on shared lanes that are toms in a fill
+                chart = apply_cymbal_to_tom_rescue(chart, drums_stem, tom_refinement, device)
+            _trace("after_tom_refinement")
+
+            # FINAL drumsep arbiter on EMITTED HITS (v25 critical step):
+            # +40dB margins, ≥98% Tom→Cym correction rate. Reasserts the
+            # physical signal after Phase 3 may have reverted prob-level fixes.
+            if (
+                song_folder is not None
+                and os.environ.get("STRUM_USE_DRUMSEP", "1") == "1"
+                and os.environ.get("STRUM_DRUMSEP_FINAL_PASS", "1") == "1"
+                and chart.hits
+            ):
+                _stems_dir = song_folder / "demucs_temp" / "stems_6"
+                if _stems_dir.exists():
+                    try:
+                        chart = apply_drumsep_hits_arbiter(
+                            chart, _stems_dir,
+                            win_ms=float(os.environ.get("STRUM_DRUMSEP_WIN_MS", "50")),
+                            margin_db=float(os.environ.get("STRUM_DRUMSEP_MARGIN_DB", "20")),
+                            toms_floor_db=float(os.environ.get("STRUM_DRUMSEP_TOMS_FLOOR_DB", "-40")),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"    Drumsep final arbiter failed: {_e}")
+
+                    # Snare-in-HH-roll veto (v25.2)
+                    if os.environ.get("STRUM_SNARE_HH_ROLL_VETO", "1") == "1":
+                        try:
+                            chart = apply_snare_in_hh_roll_veto(
+                                chart, _stems_dir,
+                                hh_window_ms=float(os.environ.get("STRUM_SHHR_HH_WIN_MS", "300")),
+                                min_hh_neighbours=int(os.environ.get("STRUM_SHHR_MIN_HH", "4")),
+                                max_other_snares=int(os.environ.get("STRUM_SHHR_MAX_OTHER", "1")),
+                                attack_db=float(os.environ.get("STRUM_SHHR_ATTACK_DB", "-8.0")),
+                            )
+                        except Exception as _e:
+                            logger.warning(f"    Snare-in-HH-roll veto failed: {_e}")
+
+                    # Crash+Ride co-stack veto (v25.4)
+                    if os.environ.get("STRUM_CR_COSTACK_VETO", "1") == "1":
+                        try:
+                            chart = apply_crash_ride_costack_veto(
+                                chart,
+                                stack_tol_ms=float(os.environ.get("STRUM_CRCV_TOL_MS", "30.0")),
+                            )
+                        except Exception as _e:
+                            logger.warning(f"    Crash+Ride co-stack veto failed: {_e}")
 
             # FINAL hand-cap re-pass: phase3_onset_rescue,
             # phase3_cymbal_cooccurrence_rescue, complete_cymbal_patterns and
@@ -600,12 +739,108 @@ class BatchPipeline:
             # postprocess_chart hand-cap step ran, leaving 3+ hand notes at
             # the same tick. Rerun resolve_playability to cap to 2 hands.
             try:
-                from scripts.chart_postprocess import resolve_playability, protect_tom_fills
+                from scripts.chart_postprocess import resolve_playability, protect_tom_fills, cap_close_hands, enforce_single_tom_per_onset
                 if chart.hits:
                     chart = protect_tom_fills(chart)
                     chart = resolve_playability(chart)
+                    chart = cap_close_hands(chart)
+                    chart = enforce_single_tom_per_onset(chart)
             except Exception as _e:
                 logger.warning(f"  Final hand-cap pass failed: {_e}")
+            _trace("after_final_handcap")
+
+            # FINAL drumsep arbiter on EMITTED HITS (v25 critical step):
+            # Phase 3 reclass can revert prob-level fixes; this re-asserts
+            # the physical signal at hit level. Cymbal hits whose toms.wav
+            # RMS dominates by margin_db get flipped to tom counterpart.
+            if (
+                song_folder is not None
+                and os.environ.get("STRUM_USE_DRUMSEP", "1") == "1"
+                and os.environ.get("STRUM_DRUMSEP_FINAL_PASS", "1") == "1"
+                and chart.hits
+            ):
+                _stems_dir = song_folder / "demucs_temp" / "stems_6"
+                if _stems_dir.exists():
+                    try:
+                        chart = apply_drumsep_hits_arbiter(
+                            chart, _stems_dir,
+                            win_ms=float(os.environ.get("STRUM_DRUMSEP_WIN_MS", "50")),
+                            margin_db=float(os.environ.get("STRUM_DRUMSEP_MARGIN_DB", "20")),
+                            toms_floor_db=float(os.environ.get("STRUM_DRUMSEP_TOMS_FLOOR_DB", "-40")),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"    Drumsep final hits arbiter failed: {_e}")
+
+            # Apply single-tom constraint one more time after the final
+            # drumsep arbiter (which can flip cymbal→tom and create a
+            # tom-tom pair with an adjacent existing tom).
+            try:
+                from scripts.chart_postprocess import enforce_single_tom_per_onset
+                if chart.hits:
+                    chart = enforce_single_tom_per_onset(chart)
+            except Exception as _e:
+                logger.warning(f"  Final single-tom pass failed: {_e}")
+
+            _trace("after_final_drumsep")
+
+            # FINAL phase shift + tick-0 grid snap (was previously the
+            # pre-shift before postprocess).  All audio-coupled passes
+            # have completed and the chart's time domain still matches the
+            # original audio, so it's safe to translate everything onto
+            # MIDI tick 0 = bar 1 now.  After the shift we snap drum hits
+            # to the same 32nd-note grid the other instruments use so
+            # bar lines render aligned in CH/Moonscraper editors.
+            if phase_offset_ms >= 1.0 and chart.hits:
+                kept = []
+                for h in chart.hits:
+                    nt = h.time_ms - phase_offset_ms
+                    if nt >= 0.0:
+                        h.time_ms = nt
+                        kept.append(h)
+                chart.hits = kept
+                for te in (chart.tempo_events or []):
+                    te.time_ms = max(0.0, te.time_ms - phase_offset_ms)
+                logger.info(f"    Phase post-shift: -{phase_offset_ms:.1f}ms "
+                            f"({len(chart.hits)} hits remain)")
+
+            # Snap drum hits to the tick-0 32nd-note grid (matches the
+            # snap pass applied to guitar/bass/keys/vocals later).  Hits
+            # inside a fast same-lane roll (neighbor within 1.1 grid
+            # cells) are left alone so the roll keeps its micro-timing —
+            # otherwise two hits would collapse onto the same tick.
+            if chart.hits and chart.tempo_events:
+                _bpm = chart.tempo_events[0].tempo_bpm
+                _beat_ms = 60_000.0 / max(_bpm, 1.0)
+                _grid_ms = _beat_ms / 8.0
+                _roll_window_ms = _grid_ms * 1.1
+                # Build per-(lane,is_cymbal) sorted timelines for roll detection
+                from collections import defaultdict as _dd
+                import bisect as _bisect
+                lane_times: dict[tuple[int, bool], list[float]] = _dd(list)
+                for h in chart.hits:
+                    lane_times[(h.lane, h.is_cymbal)].append(h.time_ms)
+                for v in lane_times.values():
+                    v.sort()
+                snapped = 0
+                for h in chart.hits:
+                    if h.time_ms <= 0:
+                        continue
+                    times = lane_times[(h.lane, h.is_cymbal)]
+                    pos = _bisect.bisect_left(times, h.time_ms)
+                    in_roll = False
+                    if pos > 0 and 0.5 < (h.time_ms - times[pos - 1]) <= _roll_window_ms:
+                        in_roll = True
+                    if not in_roll and pos + 1 < len(times) \
+                            and 0.5 < (times[pos + 1] - h.time_ms) <= _roll_window_ms:
+                        in_roll = True
+                    if in_roll:
+                        continue
+                    g = round(h.time_ms / _grid_ms) * _grid_ms
+                    if g != h.time_ms:
+                        h.time_ms = g
+                        snapped += 1
+                if snapped:
+                    logger.info(f"    Drums tick-0 32nd snap: {snapped} hits")
 
             logger.info(f"    Drums: {len(chart.hits)} Expert hits")
             return chart
@@ -654,6 +889,13 @@ class BatchPipeline:
             elif backend == "neural":
                 from src.inference.guitar_neural import transcribe_guitar_neural
                 chart = transcribe_guitar_neural(src_path, tempo_bpm=tempo_bpm)
+            elif backend == "basicpitch":
+                import sys as _sys_g
+                _scripts_dir = str(Path(__file__).resolve().parent)
+                if _scripts_dir not in _sys_g.path:
+                    _sys_g.path.insert(0, _scripts_dir)
+                from guitar_basicpitch import transcribe_guitar_basicpitch
+                chart = transcribe_guitar_basicpitch(src_path, tempo_bpm=tempo_bpm)
             else:  # hybrid
                 from src.inference.guitar_hybrid_v2 import transcribe_guitar_hybrid
                 chart = transcribe_guitar_hybrid(src_path, tempo_bpm=tempo_bpm)
@@ -669,6 +911,9 @@ class BatchPipeline:
         Backend selection (env STRUM_BASS_BACKEND, default 'hybrid'):
           * 'hybrid': V2 onset CRNN + basic-pitch + rule pitch->fret on
             bass.wav stem (same pipeline as guitar, with min_pitch=24).
+          * 'basicpitch': pure Basic Pitch onsets + amplitude filter +
+            pitch-class quintile binning. Monophonic, no chords. Validated
+            on benchmark (Pearson up to +0.89 on Yellowcard).
           * 'rule': legacy librosa+pYIN on bass.wav.
           * 'neural': V2 fret head on full mix (broken — = guitar output).
         """
@@ -694,14 +939,35 @@ class BatchPipeline:
             elif backend == "rule":
                 from src.inference.guitar_bass import transcribe_bass
                 chart = transcribe_bass(src_path, tempo_bpm=tempo_bpm, confidence_threshold=0.4)
+            elif backend == "basicpitch":
+                import sys as _sys
+                _scripts_dir = str(Path(__file__).resolve().parent)
+                if _scripts_dir not in _sys.path:
+                    _sys.path.insert(0, _scripts_dir)
+                from bass_basicpitch import transcribe_bass_basicpitch
+                chart = transcribe_bass_basicpitch(src_path, tempo_bpm=tempo_bpm)
             else:  # hybrid
                 # Bass pitch range: E1 (28) to G4 (67). Override basic-pitch
                 # range via env so the same hybrid pipeline doesn't drop low
                 # notes. Restored after the call.
+                #
+                # Bass also needs its OWN onset peak threshold — guitar runs
+                # at STRUM_GUITAR_PEAK_THR=0.55 (raised to fix density), but
+                # bass naturally has ~half the onset density and that same
+                # threshold causes severe undercharting. Default 0.35.
                 prev_min = _os_b.environ.get("STRUM_BP_MIN_PITCH")
                 prev_max = _os_b.environ.get("STRUM_BP_MAX_PITCH")
+                prev_thr = _os_b.environ.get("STRUM_GUITAR_PEAK_THR")
                 _os_b.environ["STRUM_BP_MIN_PITCH"] = "24"
                 _os_b.environ["STRUM_BP_MAX_PITCH"] = "67"
+                # Bass naturally sits ~6dB below guitar in the mix and the
+                # onset CRNN was trained on guitar attacks, so it produces
+                # weaker peaks for bass even at matched RMS. Hybrid pipeline
+                # also normalizes stem RMS, but bass attack envelopes remain
+                # softer. 0.15 default avoids dropping the song entirely
+                # when the Demucs bass stem is unusually quiet.
+                bass_thr = _os_b.environ.get("STRUM_BASS_PEAK_THR", "0.15")
+                _os_b.environ["STRUM_GUITAR_PEAK_THR"] = bass_thr
                 try:
                     from src.inference.guitar_hybrid_v2 import transcribe_guitar_hybrid
                     chart = transcribe_guitar_hybrid(src_path, tempo_bpm=tempo_bpm, is_bass=True)
@@ -714,8 +980,15 @@ class BatchPipeline:
                         _os_b.environ.pop("STRUM_BP_MAX_PITCH", None)
                     else:
                         _os_b.environ["STRUM_BP_MAX_PITCH"] = prev_max
-            chart.chords = []  # bass = single notes only
-            logger.info(f"    Bass: {len(chart.notes)} notes (no chords per C3 rules)")
+                    if prev_thr is None:
+                        _os_b.environ.pop("STRUM_GUITAR_PEAK_THR", None)
+                    else:
+                        _os_b.environ["STRUM_GUITAR_PEAK_THR"] = prev_thr
+            # transcribe_guitar_hybrid(is_bass=True) defaults max_chord_size=1
+            # and harmonic_collapse=True, so chords are produced ONLY when
+            # 2+ truly distinct (non-octave) bass pitches sound at an onset
+            # — i.e. genuine double-stops. No further filtering needed.
+            logger.info(f"    Bass: {len(chart.notes)} notes + {len(chart.chords)} chords")
             return chart
         except Exception as e:
             logger.warning(f"  ⚠ Bass transcription failed: {e}")
@@ -739,12 +1012,16 @@ class BatchPipeline:
             logger.warning(f"  ⚠ Vocals transcription failed: {e}")
             return None, None
     
-    def transcribe_keys(self, other_stem: Path):
+    def transcribe_keys(self, other_stem: Path, guitar_stem: Path | None = None):
         """Transcribe keys/keyboards from other stem.
 
         Uses the keyboard-presence detector (force=False) so we don't hallucinate
         keys onto songs that don't have a keyboard part. Most songs in our test
         set lack PART KEYS — gating here avoids massive precision loss.
+
+        guitar_stem (when provided) is used by the detector to reject piano
+        stems that are mostly guitar leakage (htdemucs_6s often bleeds heavy
+        guitar into the piano stem).
         """
         if not self.include_keys:
             return None
@@ -752,7 +1029,10 @@ class BatchPipeline:
         logger.info("  Transcribing keys...")
 
         try:
-            notes, details = self.keys_charter.transcribe(str(other_stem), force=False)
+            notes, details = self.keys_charter.transcribe(
+                str(other_stem), force=False,
+                guitar_stem=str(guitar_stem) if guitar_stem else None,
+            )
             if notes is None:
                 logger.info("    Keys: no keyboard detected, skipping")
             return notes
@@ -873,23 +1153,47 @@ class BatchPipeline:
         easy_chart = _reduce_to_easy(medium_chart)
         
         events = []
-        for difficulty, diff_chart in [("expert", chart), ("hard", hard_chart), 
+        # Tom markers (110/111/112) are GLOBAL flags that apply across all
+        # difficulties. They must NOT be offset per-difficulty (a -12 offset
+        # would turn marker 112 into note 100, colliding with Expert Green).
+        # Emit each unique (tick, marker) only once.
+        tom_marker_set: set[tuple[int, int]] = set()
+
+        for difficulty, diff_chart in [("expert", chart), ("hard", hard_chart),
                                         ("medium", medium_chart), ("easy", easy_chart)]:
             note_offset = DIFFICULTY_NOTE_OFFSETS[difficulty]
             hits_with_ticks = _compute_hit_ticks(diff_chart, ticks_per_beat)
-            
+
             for hit in hits_with_ticks:
                 base_note = _get_midi_note(hit) + note_offset
                 note_duration = ticks_per_beat // 8
-                
+
                 events.append(("on", hit.tick, base_note, hit.velocity))
                 events.append(("off", hit.tick + note_duration, base_note, 0))
-                
+
                 tom_marker = _get_tom_marker(hit)
                 if tom_marker is not None:
-                    events.append(("on", hit.tick, tom_marker + note_offset, hit.velocity))
-                    events.append(("off", hit.tick + note_duration, tom_marker + note_offset, 0))
-        
+                    tom_marker_set.add((hit.tick, tom_marker))
+
+        # Emit deduplicated tom markers (no per-difficulty offset).
+        note_duration = ticks_per_beat // 8
+        for tick, marker in tom_marker_set:
+            events.append(("on", tick, marker, 100))
+            events.append(("off", tick + note_duration, marker, 0))
+
+        # Final (tick, note, type) dedup — guards against multi-pass
+        # classification artifacts where two DrumHits with same lane
+        # collapse to the same export tick.
+        seen: set[tuple[str, int, int]] = set()
+        unique_events = []
+        for etype, tick, note, vel in events:
+            key = (etype, tick, note)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_events.append((etype, tick, note, vel))
+        events = unique_events
+
         events.sort(key=lambda e: (e[1], e[0] == "off"))
         
         prev_tick = 0
@@ -962,35 +1266,56 @@ class BatchPipeline:
         return track
     
     def _create_vocals_track(self, phrases, name: str, tempo_bpm: float, ticks_per_beat: int) -> mido.MidiTrack:
-        """Create vocals track with phrase markers and pitch notes."""
+        """Create vocals track with phrase markers, pitch notes, and slide connections.
+
+        connects_to_next on a VocalNote means YARG/CH should draw a smooth
+        slide between this note and the next \u2014 we encode it by ensuring the
+        note_off lines up with (or 1 tick before) the next note_on, with no
+        gap between them. Without this the chart looks "stair-step".
+        """
         track = mido.MidiTrack()
         track.append(mido.MetaMessage('track_name', name=name, time=0))
-        
+
         ticks_per_sec = ticks_per_beat * tempo_bpm / 60
         events = []
-        
+
         for phrase in phrases:
             # Phrase marker (note 105)
             start_tick = int(phrase.start_time * ticks_per_sec)
             end_tick = int(phrase.end_time * ticks_per_sec)
-            
+
             events.append(("on", start_tick, 105, 100))
             events.append(("off", end_tick, 105, 0))
-            
-            # Individual notes with pitch
-            for note in phrase.notes:
+
+            phrase_notes = phrase.notes
+            for i, note in enumerate(phrase_notes):
                 note_start = int(note.start_time * ticks_per_sec)
                 note_end = int(note.end_time * ticks_per_sec)
+
+                # Slide handling: when this note connects to the next, force
+                # note_off to land EXACTLY at the next note's note_on tick.
+                # YARG/CH renders these as a single legato slide instead of
+                # two stair-step notes.
+                if note.connects_to_next and i + 1 < len(phrase_notes):
+                    next_start = int(phrase_notes[i + 1].start_time * ticks_per_sec)
+                    note_end = next_start  # touch, no gap
+
+                # Guarantee at least 1-tick duration
+                if note_end <= note_start:
+                    note_end = note_start + 1
+
                 midi_pitch = note.midi_pitch  # VocalNote uses midi_pitch attribute
-                
+
                 events.append(("on", note_start, midi_pitch, 100))
                 events.append(("off", note_end, midi_pitch, 0))
-                
+
                 # Add lyric text
                 if note.lyric:
                     events.append(("lyric", note_start, note.lyric, 0))
-        
-        events.sort(key=lambda e: (e[1], 0 if e[0] == "lyric" else (1 if e[0] == "on" else 2)))
+
+        # Sort: at same tick, lyric first, then off (so prev pitch ends before
+        # new pitch starts for slides), then on.
+        events.sort(key=lambda e: (e[1], 0 if e[0] == "lyric" else (1 if e[0] == "off" else 2)))
         
         prev_tick = 0
         for event in events:
@@ -1018,30 +1343,40 @@ class BatchPipeline:
 
         # Map pitches to 5 lanes
         pitches = [n.midi_pitch for n in notes]
-        if pitches:
-            min_pitch = min(pitches)
-            max_pitch = max(pitches)
-            pitch_range = max(max_pitch - min_pitch, 1)
-        
+        if not pitches:
+            track.append(mido.MetaMessage('end_of_track', time=0))
+            return track
+        min_pitch = min(pitches)
+        max_pitch = max(pitches)
+        pitch_range = max(max_pitch - min_pitch, 1)
+
+        # Deterministic difficulty reduction (every Nth note dropped, in order):
+        #   expert: keep all
+        #   hard:   drop every 4th  (75% kept)
+        #   medium: keep every other (50%)
+        #   easy:   keep every 3rd  (~33%)
+        diff_keep = {
+            "expert": lambda i: True,
+            "hard":   lambda i: i % 4 != 0,
+            "medium": lambda i: i % 2 == 0,
+            "easy":   lambda i: i % 3 == 0,
+        }
+
         events = []
         for difficulty, offset in [("expert", 96), ("hard", 84), ("medium", 72), ("easy", 60)]:
-            for note in notes:
+            keep = diff_keep[difficulty]
+            for i, note in enumerate(notes):
+                if not keep(i):
+                    continue
                 # Map pitch to 0-4 lanes
                 lane = int((note.midi_pitch - min_pitch) / pitch_range * 4.99)
                 lane = max(0, min(4, lane))
-                
-                # Reduce notes for lower difficulties
-                if difficulty == "hard" and hash(str(note.start_time)) % 10 < 2:
-                    continue
-                if difficulty == "medium" and hash(str(note.start_time)) % 10 < 4:
-                    continue
-                if difficulty == "easy" and hash(str(note.start_time)) % 10 < 6:
-                    continue
-                
+
                 start_tick = int(note.start_time * ticks_per_sec)
-                end_tick = int(note.end_time * ticks_per_sec)
+                end_tick = max(start_tick + ticks_per_beat // 8,
+                               int(note.end_time * ticks_per_sec))
                 midi_note = offset + lane
-                
+
                 events.append(("on", start_tick, midi_note, 100))
                 events.append(("off", end_tick, midi_note, 0))
         
@@ -1058,65 +1393,97 @@ class BatchPipeline:
         return track
     
     def _create_prokeys_track(self, notes, name: str, tempo_bpm: float, ticks_per_beat: int, difficulty: str) -> mido.MidiTrack:
-        """Create Pro Keys track with actual pitches and range shifts."""
+        """Create Pro Keys track with actual pitches and range-shift markers.
+
+        Pro Keys MIDI spec (Rock Band / Clone Hero):
+          * 25-key playable range is fixed at MIDI notes 48..72 (C3..C5).
+          * Notes outside that 2-octave window are OCTAVE-FOLDED to fit so
+            high-piano content isn't silently dropped.
+          * Range-shift markers are MIDI notes 0/2/4/5/7/9 (C/D/E/F/G/A),
+            ONE active at a time. We pick the range covering the most notes
+            in the song and emit a single shift at t=0.
+          * Difficulty reduction uses deterministic stride (every Nth note),
+            NOT hash() which is randomized per Python run.
+        """
         track = mido.MidiTrack()
         track.append(mido.MetaMessage('track_name', name=name, time=0))
-        
-        ticks_per_sec = ticks_per_beat * tempo_bpm / 60
-        
-        # Reduce notes for lower difficulties
-        keep_ratio = {"expert": 1.0, "hard": 0.75, "medium": 0.5, "easy": 0.35}[difficulty]
-        
-        # Filter notes
-        filtered_notes = []
-        for i, note in enumerate(notes):
-            if hash(str(note.start_time)) % 100 < keep_ratio * 100:
-                filtered_notes.append(note)
-        
-        if not filtered_notes:
+
+        if not notes:
             track.append(mido.MetaMessage('end_of_track', time=0))
             return track
-        
+
+        ticks_per_sec = ticks_per_beat * tempo_bpm / 60
+
+        # Deterministic difficulty reduction (stride): keep every 1, 4/3, 2, 3rd note
+        keep_stride = {"expert": 1, "hard": 1, "medium": 2, "easy": 3}[difficulty]
+        # Hard keeps 75% — emulate by dropping every 4th note
+        if difficulty == "hard":
+            filtered = [n for i, n in enumerate(notes) if i % 4 != 0]
+        else:
+            filtered = notes[::keep_stride]
+
+        if not filtered:
+            track.append(mido.MetaMessage('end_of_track', time=0))
+            return track
+
+        # Pick best range shift: try each (C/D/E/F/G/A) and pick the one
+        # that puts the most notes (after octave-fold) closest to center.
+        # For simplicity, pick the median pitch and choose the range whose
+        # window center is closest.
+        pitches_all = [n.midi_pitch for n in filtered]
+        median_pitch = int(np.median(pitches_all))
+        # Range shift -> chart's 48 maps to that pitch class an octave below median area
+        # Range options: C(0), D(2), E(4), F(5), G(7), A(9). The visible window
+        # center is offset+60 (midpoint of 48..72=60). Pick offset minimizing
+        # |median_pitch - (60 + offset)|.
+        range_options = [(0, 'C'), (2, 'D'), (4, 'E'), (5, 'F'), (7, 'G'), (9, 'A')]
+        best_offset, _ = min(range_options, key=lambda r: abs(median_pitch - (60 + r[0])))
+
         events = []
-        
-        # Add range shift markers
-        prev_range_pos = -1
-        for note in filtered_notes:
-            # Calculate range position (0-5) based on pitch
-            # Pro Keys visible range is 17 keys, we shift to keep notes visible
-            range_pos = max(0, min(5, (note.midi_pitch - 48) // 5))
-            
-            if range_pos != prev_range_pos:
-                start_tick = int(note.start_time * ticks_per_sec)
-                events.append(("range", start_tick, range_pos))
-                prev_range_pos = range_pos
-        
-        # Add notes
-        for note in filtered_notes:
+
+        # Single range shift at t=0
+        events.append(("range", 0, best_offset))
+
+        # Octave-fold every note into [48, 72]
+        for note in filtered:
+            p = int(note.midi_pitch)
+            while p < 48:
+                p += 12
+            while p > 72:
+                p -= 12
+
             start_tick = int(note.start_time * ticks_per_sec)
-            end_tick = int(note.end_time * ticks_per_sec)
-            
-            # Clamp to Pro Keys range (48-72 = C3-C5)
-            midi_pitch = max(48, min(72, note.midi_pitch))
-        events.sort(key=lambda e: (e[1], 0 if e[0] == "range" else (1 if e[0] == "on" else 2)))
-        
+            end_tick = max(start_tick + ticks_per_beat // 8,
+                           int(note.end_time * ticks_per_sec))
+            events.append(("on", start_tick, p, int(note.velocity)))
+            events.append(("off", end_tick, p, 0))
+
+        # Sort: at same tick, range first, then off, then on (avoid same-pitch
+        # off cancelling a fresh on)
+        def _sort_key(e):
+            order = {"range": 0, "off": 1, "on": 2}
+            return (e[1], order[e[0]])
+        events.sort(key=_sort_key)
+
         prev_tick = 0
         for event in events:
             etype = event[0]
             tick = event[1]
-            delta = tick - prev_tick
-            
+            delta = max(0, tick - prev_tick)
+
             if etype == "range":
-                # Note 9 = range shift, velocity = position (0-5)
-                track.append(mido.Message('note_on', note=9, velocity=event[2], time=delta))
-                track.append(mido.Message('note_off', note=9, velocity=0, time=0))
+                # Range shift = brief note pulse on offset (0/2/4/5/7/9)
+                shift_note = event[2]
+                track.append(mido.Message('note_on', note=shift_note, velocity=100, time=delta))
+                track.append(mido.Message('note_off', note=shift_note, velocity=0, time=ticks_per_beat // 16))
+                prev_tick = tick + ticks_per_beat // 16
             elif etype == "on":
                 track.append(mido.Message('note_on', note=event[2], velocity=event[3], time=delta))
+                prev_tick = tick
             else:
                 track.append(mido.Message('note_off', note=event[2], velocity=0, time=delta))
-            
-            prev_tick = tick
-        
+                prev_tick = tick
+
         track.append(mido.MetaMessage('end_of_track', time=0))
         return track
     
@@ -1128,15 +1495,19 @@ class BatchPipeline:
         enhancer = ChartEnhancer()
         enhancer.enhance_chart(str(midi_path), str(audio_path), str(midi_path))
     
-    def convert_to_ogg(self, input_path: Path, output_path: Path):
-        """Convert audio to OGG format."""
-        cmd = [
-            "ffmpeg", "-y", "-i", str(input_path),
+    def convert_to_ogg(self, input_path: Path, output_path: Path,
+                       trim_start_ms: float = 0.0):
+        """Convert audio to OGG format, optionally trimming N ms from the start."""
+        cmd = ["ffmpeg", "-y"]
+        if trim_start_ms and trim_start_ms >= 1.0:
+            cmd += ["-ss", f"{trim_start_ms / 1000.0:.3f}"]
+        cmd += [
+            "-i", str(input_path),
             "-vn",  # Strip any video/image streams (album art)
             "-c:a", "libvorbis", "-q:a", "6",
-            str(output_path)
+            str(output_path),
         ]
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             # Try with powershell/system ffmpeg
@@ -1409,10 +1780,22 @@ song_length = {duration_ms}
         keys_notes = None
         errors = []
         
+        # Phase offset for MIDI-time alignment (must be applied to ALL
+        # instruments + audio trim so bar lines render under audio downbeats).
+        # Drums get it pre-postprocess; other instruments are shifted below
+        # in the combined-MIDI build block.
+        import os as _os_phase
+        phase_offset_ms_for_align = float(audio_info.get('phase_offset_ms', 0.0)) \
+            if _os_phase.environ.get("STRUM_PHASE_ALIGN", "1") == "1" else 0.0
+
         # Drums
         if "drums" in stems:
             try:
-                drums_chart = self.transcribe_drums(stems["drums"], tempo_bpm)
+                drums_chart = self.transcribe_drums(
+                    stems["drums"], tempo_bpm,
+                    song_folder=song_folder,
+                    phase_offset_ms=phase_offset_ms_for_align,
+                )
                 if drums_chart:
                     result.drums_hits = len(drums_chart.hits)
                     logger.info(f"    Drums: {result.drums_hits} hits")
@@ -1440,7 +1823,7 @@ song_length = {duration_ms}
             try:
                 stem_type = "piano" if "piano" in stems else "other"
                 logger.info(f"    Using {stem_type} stem for keys transcription")
-                keys_notes = self.transcribe_keys(keys_stem)
+                keys_notes = self.transcribe_keys(keys_stem, guitar_stem=stems.get("guitar"))
                 if keys_notes:
                     result.keys_notes = len(keys_notes)
                     logger.info(f"    Keys: {result.keys_notes} notes")
@@ -1490,7 +1873,199 @@ song_length = {duration_ms}
         
         # Create combined MIDI (even if some instruments failed)
         try:
+            import os
             logger.info("  Creating combined chart...")
+
+            # Phase alignment: shift all hits/notes back by phase_offset_ms and
+            # trim the audio start by the same amount, so MIDI tick 0 (= bar 1
+            # in Clone Hero) coincides with the audio's first detected beat.
+            # Without this, bar lines render at chart_time 0, bar_period, …
+            # while audio downbeats sit at +phase_offset_ms — every note
+            # drifts visibly off the backing track.
+            phase_offset_ms = float(audio_info.get('phase_offset_ms', 0.0)) \
+                if os.environ.get("STRUM_PHASE_ALIGN", "1") == "1" else 0.0
+
+            if phase_offset_ms >= 1.0:
+                logger.info(f"  Phase align: shifting charts by -{phase_offset_ms:.1f}ms")
+                # Drums are already shifted inside transcribe_drums (BEFORE
+                # postprocess) so that grid quantization snaps to a 0-anchored
+                # MIDI grid. Skipping here avoids a double-shift.
+                # Guitar / Bass (have .notes[].time_ms or .start_ms)
+                for chart_obj in (guitar_chart, bass_chart):
+                    if chart_obj is None:
+                        continue
+                    notes = getattr(chart_obj, 'notes', None) or []
+                    kept_notes = []
+                    for n in notes:
+                        for attr in ('time_ms', 'start_ms', 'start_time_ms'):
+                            if hasattr(n, attr):
+                                v = getattr(n, attr)
+                                if v is None:
+                                    continue
+                                nv = v - phase_offset_ms
+                                if nv < 0.0:
+                                    break
+                                setattr(n, attr, nv)
+                        else:
+                            kept_notes.append(n)
+                            continue
+                        # broke -> drop
+                    # Only assign if we actually filtered (some chart types
+                    # may have notes inside their own structure)
+                    if kept_notes and len(kept_notes) != len(notes):
+                        try:
+                            chart_obj.notes = kept_notes
+                        except Exception:
+                            pass
+                # Vocals phrases (start/end ms or start/end_time in SECONDS)
+                phase_offset_s = phase_offset_ms / 1000.0
+                for phrases in (lead_phrases, harmony_phrases):
+                    if not phrases:
+                        continue
+                    kept_p = []
+                    for p in phrases:
+                        for s_attr in ('start_ms', 'start_time_ms'):
+                            if hasattr(p, s_attr) and getattr(p, s_attr) is not None:
+                                ns = getattr(p, s_attr) - phase_offset_ms
+                                if ns < 0.0:
+                                    ns = 0.0
+                                setattr(p, s_attr, ns)
+                        for e_attr in ('end_ms', 'end_time_ms'):
+                            if hasattr(p, e_attr) and getattr(p, e_attr) is not None:
+                                setattr(p, e_attr,
+                                        max(0.0, getattr(p, e_attr) - phase_offset_ms))
+                        # VocalPhrase uses start_time / end_time in SECONDS
+                        if hasattr(p, 'start_time') and getattr(p, 'start_time') is not None:
+                            p.start_time = max(0.0, p.start_time - phase_offset_s)
+                        if hasattr(p, 'end_time') and getattr(p, 'end_time') is not None:
+                            p.end_time = max(0.0, p.end_time - phase_offset_s)
+                        # Per-syllable times if present
+                        for syl_attr in ('syllables', 'words', 'notes'):
+                            syls = getattr(p, syl_attr, None)
+                            if not syls:
+                                continue
+                            for s in syls:
+                                for a in ('time_ms', 'start_ms', 'start_time_ms'):
+                                    if hasattr(s, a) and getattr(s, a) is not None:
+                                        setattr(s, a, max(0.0, getattr(s, a) - phase_offset_ms))
+                                for a in ('end_ms', 'end_time_ms'):
+                                    if hasattr(s, a) and getattr(s, a) is not None:
+                                        setattr(s, a, max(0.0, getattr(s, a) - phase_offset_ms))
+                                # VocalNote start_time / end_time in SECONDS
+                                if hasattr(s, 'start_time') and getattr(s, 'start_time') is not None:
+                                    s.start_time = max(0.0, s.start_time - phase_offset_s)
+                                if hasattr(s, 'end_time') and getattr(s, 'end_time') is not None:
+                                    s.end_time = max(0.0, s.end_time - phase_offset_s)
+                        kept_p.append(p)
+                    phrases[:] = kept_p
+                # Keys (list of dicts or simple objects with time_ms)
+                if keys_notes:
+                    kept_k = []
+                    for n in keys_notes:
+                        if isinstance(n, dict):
+                            for a in ('time_ms', 'start_ms'):
+                                if a in n and n[a] is not None:
+                                    nv = n[a] - phase_offset_ms
+                                    if nv < 0:
+                                        break
+                                    n[a] = nv
+                            else:
+                                for a in ('end_ms', 'end_time_ms'):
+                                    if a in n and n[a] is not None:
+                                        n[a] = max(0.0, n[a] - phase_offset_ms)
+                                kept_k.append(n)
+                                continue
+                            continue
+                        else:
+                            for a in ('time_ms', 'start_ms', 'start_time_ms'):
+                                if hasattr(n, a) and getattr(n, a) is not None:
+                                    nv = getattr(n, a) - phase_offset_ms
+                                    if nv < 0:
+                                        break
+                                    setattr(n, a, nv)
+                            else:
+                                for a in ('end_ms', 'end_time_ms'):
+                                    if hasattr(n, a) and getattr(n, a) is not None:
+                                        setattr(n, a, max(0.0, getattr(n, a) - phase_offset_ms))
+                                kept_k.append(n)
+                                continue
+                    keys_notes = kept_k
+                # Update reported duration so song.ini matches trimmed audio.
+                audio_info['duration_ms'] = max(0, audio_info['duration_ms'] - int(phase_offset_ms))
+
+            # Snap non-drum instruments to the 32nd-note MIDI grid anchored at
+            # tick 0.  Drums already went through chart_postprocess with the
+            # pre-shift, so they're already on-grid.  Guitar/bass/keys/vocals
+            # come straight from neural transcribers with no quantization, so
+            # they sit on raw audio onset times \u2014 visible in editors as
+            # notes a few ms off the bar lines.
+            beat_ms = 60_000.0 / max(tempo_bpm, 1.0)
+            grid_ms = beat_ms / 8.0  # 32nd-note grid
+            grid_s = grid_ms / 1000.0
+            def _snap(t):
+                if t is None or t <= 0:
+                    return t
+                return round(t / grid_ms) * grid_ms
+            def _snap_s(t):
+                if t is None or t <= 0:
+                    return t
+                return round(t / grid_s) * grid_s
+
+            for chart_obj in (guitar_chart, bass_chart):
+                if chart_obj is None:
+                    continue
+                for n in (getattr(chart_obj, 'notes', None) or []):
+                    for a in ('time_ms', 'start_ms', 'start_time_ms'):
+                        if hasattr(n, a) and getattr(n, a) is not None:
+                            setattr(n, a, _snap(getattr(n, a)))
+                    for a in ('end_ms', 'end_time_ms'):
+                        if hasattr(n, a) and getattr(n, a) is not None:
+                            setattr(n, a, _snap(getattr(n, a)))
+                # GuitarChord also has time_ms — was missed before, leaving
+                # all chord events off-grid in the editor.
+                for c in (getattr(chart_obj, 'chords', None) or []):
+                    for a in ('time_ms', 'start_ms', 'start_time_ms'):
+                        if hasattr(c, a) and getattr(c, a) is not None:
+                            setattr(c, a, _snap(getattr(c, a)))
+                    for a in ('end_ms', 'end_time_ms'):
+                        if hasattr(c, a) and getattr(c, a) is not None:
+                            setattr(c, a, _snap(getattr(c, a)))
+            if keys_notes:
+                for n in keys_notes:
+                    if isinstance(n, dict):
+                        for a in ('time_ms', 'start_ms', 'end_ms', 'end_time_ms'):
+                            if a in n and n[a] is not None:
+                                n[a] = _snap(n[a])
+                    else:
+                        for a in ('time_ms', 'start_ms', 'start_time_ms',
+                                  'end_ms', 'end_time_ms'):
+                            if hasattr(n, a) and getattr(n, a) is not None:
+                                setattr(n, a, _snap(getattr(n, a)))
+            # Vocal phrases use start_time / end_time in SECONDS (not ms)
+            # and contain VocalNote objects also in seconds.  These were
+            # being missed entirely by the *_ms attribute scan, leaving
+            # vocal pitches at raw Whisper timestamps (frame-aligned ~20ms
+            # off the grid).
+            for phrases in (lead_phrases, harmony_phrases):
+                if not phrases:
+                    continue
+                for p in phrases:
+                    for a in ('start_time', 'end_time'):
+                        if hasattr(p, a) and getattr(p, a) is not None:
+                            setattr(p, a, _snap_s(getattr(p, a)))
+                    for a in ('start_ms', 'end_ms', 'start_time_ms', 'end_time_ms'):
+                        if hasattr(p, a) and getattr(p, a) is not None:
+                            setattr(p, a, _snap(getattr(p, a)))
+                    for syl_attr in ('syllables', 'words', 'notes'):
+                        for s in (getattr(p, syl_attr, None) or []):
+                            for a in ('start_time', 'end_time'):
+                                if hasattr(s, a) and getattr(s, a) is not None:
+                                    setattr(s, a, _snap_s(getattr(s, a)))
+                            for a in ('time_ms', 'start_ms', 'start_time_ms',
+                                      'end_ms', 'end_time_ms'):
+                                if hasattr(s, a) and getattr(s, a) is not None:
+                                    setattr(s, a, _snap(getattr(s, a)))
+
             notes_path = song_folder / "notes.mid"
             self.create_combined_midi(
                 notes_path,
@@ -1503,9 +2078,10 @@ song_length = {duration_ms}
                 keys_notes=keys_notes,
             )
             
-            # Convert audio
+            # Convert audio (trim leading phase_offset_ms so audio downbeats
+            # align with bar lines in the chart).
             song_ogg = song_folder / "song.ogg"
-            self.convert_to_ogg(audio_path, song_ogg)
+            self.convert_to_ogg(audio_path, song_ogg, trim_start_ms=phase_offset_ms)
             
             # Create song.ini
             self.create_song_ini(

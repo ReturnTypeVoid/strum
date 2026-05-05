@@ -96,7 +96,28 @@ def quantize_hits(chart: DrumChart, max_subdivision: int = 16,
     logger.info(f"  Grid phase offset: {phase_offset_ms:.1f}ms "
                 f"({phase_offset_ms/grid_ms:.3f} of grid)")
 
+    # Pre-compute hand-hit timeline (lane >= 1) for cross-lane fast-roll
+    # detection. When a fast roll like LT→LT→FT crosses lanes within a
+    # single grid cell, naive quantization stacks two of the hits on the
+    # same tick (different lanes), creating a chord. We leave such hits
+    # un-quantized to preserve the roll's micro-timing.
+    hand_times_sorted = sorted(h.time_ms for h in chart.hits if h.lane >= 1)
+    import bisect as _bisect
+    roll_neighbor_ms = grid_ms * 1.1  # slightly more than one grid cell
+
+    def _has_close_neighbor(t: float) -> bool:
+        if not hand_times_sorted:
+            return False
+        pos = _bisect.bisect_left(hand_times_sorted, t)
+        if pos > 0 and 0.5 < (t - hand_times_sorted[pos - 1]) <= roll_neighbor_ms:
+            return True
+        if pos < len(hand_times_sorted) - 1 \
+                and 0.5 < (hand_times_sorted[pos + 1] - t) <= roll_neighbor_ms:
+            return True
+        return False
+
     new_hits = []
+    skipped_roll = 0
     for hit in chart.hits:
         # Find nearest grid point, accounting for phase offset
         grid_pos = round((hit.time_ms - phase_offset_ms) / grid_ms)
@@ -104,9 +125,23 @@ def quantize_hits(chart: DrumChart, max_subdivision: int = 16,
 
         # Only snap if within a reasonable window (half a grid cell)
         if abs(hit.time_ms - snapped_ms) <= grid_ms / 2:
-            new_hits.append(replace(hit, time_ms=snapped_ms))
+            # Cross-lane fast-roll guard: if this is a hand hit with a
+            # very close neighbor (within ~1 grid cell) AND snapping it
+            # would change its time by more than 1/4 of the grid, leave
+            # the original timing so the roll doesn't collapse into a
+            # chord with the neighbor.
+            if hit.lane >= 1 and _has_close_neighbor(hit.time_ms) \
+                    and abs(hit.time_ms - snapped_ms) > grid_ms / 4:
+                new_hits.append(hit)
+                skipped_roll += 1
+            else:
+                new_hits.append(replace(hit, time_ms=snapped_ms))
         else:
             new_hits.append(hit)
+
+    if skipped_roll > 0:
+        logger.info(f"  Roll-protect: {skipped_roll} hits left un-quantized "
+                    f"(close cross-lane neighbor)")
 
     # Dedup after quantization: if two hits landed on the same grid point
     # for the same lane, keep only one. When a cymbal and tom land on the
@@ -398,6 +433,24 @@ def align_simultaneous_hits(chart: DrumChart, max_subdivision: int = 96,
     for hit in hits_sorted:
         lane_times[hit.lane].append(hit.time_ms)
 
+    # Cross-lane hand timeline (lane >= 1) — for fast-roll detection that
+    # spans multiple lanes (e.g. LowTom→LowTom→FloorTom). Without this,
+    # the FloorTom (lone on its lane) gets merged with the nearest LowTom
+    # into a chord, collapsing the roll.
+    hand_times = sorted(h.time_ms for h in hits_sorted if h.lane >= 1)
+    cross_lane_run_ms = 110.0  # ~16th note at 130 BPM
+
+    def _has_close_hand_neighbor(t: float) -> bool:
+        if not hand_times:
+            return False
+        pos = bisect.bisect_left(hand_times, t)
+        if pos > 0 and 0.5 < (t - hand_times[pos - 1]) <= cross_lane_run_ms:
+            return True
+        if pos < len(hand_times) - 1 \
+                and 0.5 < (hand_times[pos + 1] - t) <= cross_lane_run_ms:
+            return True
+        return False
+
     def _is_in_run(hit_time: float, lane: int, threshold_ms: float = None) -> bool:
         """True if this hit has close same-lane neighbors (part of a fast run)."""
         if threshold_ms is None:
@@ -453,6 +506,36 @@ def align_simultaneous_hits(chart: DrumChart, max_subdivision: int = 96,
             for i in group
         ]
         if all(run_flags):
+            continue
+
+        # Cross-lane fast-roll protection: if any hit in this group has a
+        # close hand-lane neighbor OUTSIDE the group (e.g. LowTom→LowTom→
+        # FloorTom roll), do NOT merge. Otherwise the lone-lane FloorTom
+        # would be collapsed into a chord with one of the LowToms,
+        # turning a 3-note tom roll into "tom + (tom+floortom)".
+        # Restrict this check to hand lanes — kick (lane 0) often pairs
+        # with snare/cymbal on strong beats and SHOULD be merged.
+        group_times = [hits_sorted[i].time_ms for i in group]
+        group_lo, group_hi = min(group_times), max(group_times)
+        in_roll = False
+        for i in group:
+            h = hits_sorted[i]
+            if h.lane < 1:
+                continue
+            t = h.time_ms
+            pos = bisect.bisect_left(hand_times, t)
+            # Look outside the group window for a close neighbor
+            for nb_idx in (pos - 1, pos + 1):
+                if 0 <= nb_idx < len(hand_times):
+                    nb_t = hand_times[nb_idx]
+                    if group_lo - 0.5 <= nb_t <= group_hi + 0.5:
+                        continue  # neighbor is inside the group
+                    if 0.5 < abs(t - nb_t) <= cross_lane_run_ms:
+                        in_roll = True
+                        break
+            if in_roll:
+                break
+        if in_roll:
             continue
 
         # Find the target time to snap to.  Prioritize notes that are
@@ -945,6 +1028,14 @@ def complete_cymbal_patterns(
                             break
 
                     if not already_exists:
+                        # Snap fill to nearest fine grid (16th/triplet/8th
+                        # of pattern_interval) so cymbal rolls remain on a
+                        # clean grid even when seed `times[i]` is jittered.
+                        snap_grid_ms = pattern_interval / 2  # 32nd-relative
+                        snapped_fill = round(fill_time / snap_grid_ms) * snap_grid_ms
+                        if abs(snapped_fill - fill_time) < snap_grid_ms / 2:
+                            fill_time = snapped_fill
+                            fill_key = (round(fill_time, 1), lane, is_cymbal)
                         new_hits.append(DrumHit(
                             time_ms=fill_time,
                             tick=0,
@@ -1335,6 +1426,227 @@ def compensate_bleed(chart: DrumChart,
 
 
 # ══════════════════════════════════════════════════════════════
+# Beat-magnet snap (catches near-beat notes the fine grid missed)
+# ══════════════════════════════════════════════════════════════
+
+def snap_to_beat_positions(chart: DrumChart, max_offset_ms: float = 25.0,
+                           run_threshold_ms: float = 90.0) -> DrumChart:
+    """Pull non-run hits onto the nearest quarter or 8th-note position.
+
+    The fine quantizer only snaps within +/-(grid/2). For a 16th grid at
+    120 BPM that's +/-7.8ms, so a hit 12-25ms off a beat (e.g. detector
+    drift on a long snare hit) lands on a 32nd grid point and looks
+    visibly off the main beat. This pass re-snaps any non-run hit within
+    ``max_offset_ms`` of a quarter-note (or 8th-note) position to that beat.
+
+    Hits inside a fast same-lane run (neighbor within ``run_threshold_ms``)
+    are left alone so cymbal/snare rolls keep their micro-timing.
+    """
+    if not chart.hits or not chart.tempo_events:
+        return chart
+
+    tempo_bpm = chart.tempo_events[0].tempo_bpm
+    ms_per_beat = 60_000.0 / tempo_bpm
+    eighth_ms = ms_per_beat / 2
+
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+
+    # Build per-lane time lists for SAME-lane run detection
+    lane_times: dict[tuple[int, bool], list[float]] = defaultdict(list)
+    for h in hits_sorted:
+        lane_times[(h.lane, h.is_cymbal)].append(h.time_ms)
+
+    # Also build a global timeline (drum lanes only — exclude kick lane 0
+    # which often coincides with hand notes on strong beats and is NOT
+    # part of a hand roll). Used to detect cross-lane fast rolls like
+    # LowTom→FloorTom→LowTom that would otherwise be magnetized into
+    # simultaneous chords.
+    drum_times = [h.time_ms for h in hits_sorted if h.lane >= 1]
+
+    import bisect
+
+    def _in_run(t: float, key: tuple[int, bool], lane: int) -> bool:
+        # Same-lane run (cymbal/snare rolls)
+        times = lane_times[key]
+        pos = bisect.bisect_left(times, t)
+        if pos > 0 and (t - times[pos - 1]) <= run_threshold_ms:
+            return True
+        if pos < len(times) - 1 and (times[pos + 1] - t) <= run_threshold_ms:
+            return True
+        # Cross-lane hand-roll detection: any neighboring hand hit within
+        # run_threshold_ms means this hit is part of a fast pattern and
+        # must NOT be snapped (would collapse the roll into a chord).
+        if lane >= 1 and drum_times:
+            gpos = bisect.bisect_left(drum_times, t)
+            if gpos > 0 and (t - drum_times[gpos - 1]) <= run_threshold_ms \
+                    and (t - drum_times[gpos - 1]) > 0.5:
+                return True
+            if gpos < len(drum_times) - 1 \
+                    and (drum_times[gpos + 1] - t) <= run_threshold_ms \
+                    and (drum_times[gpos + 1] - t) > 0.5:
+                return True
+        return False
+
+    snapped = 0
+    new_hits = []
+    for hit in hits_sorted:
+        if _in_run(hit.time_ms, (hit.lane, hit.is_cymbal), hit.lane):
+            new_hits.append(hit)
+            continue
+        # Try quarter-beat first, then 8th — wider tolerance for the more
+        # important beat positions.
+        nearest_beat = round(hit.time_ms / ms_per_beat) * ms_per_beat
+        nearest_eighth = round(hit.time_ms / eighth_ms) * eighth_ms
+        d_beat = abs(hit.time_ms - nearest_beat)
+        d_eighth = abs(hit.time_ms - nearest_eighth)
+        if d_beat <= max_offset_ms and d_beat <= d_eighth + 2.0:
+            target = nearest_beat
+        elif d_eighth <= max_offset_ms * 0.65:
+            target = nearest_eighth
+        else:
+            new_hits.append(hit)
+            continue
+        if abs(hit.time_ms - target) > 0.5:
+            snapped += 1
+            new_hits.append(replace(hit, time_ms=target))
+        else:
+            new_hits.append(hit)
+
+    # Dedup
+    new_hits.sort(key=lambda h: (h.time_ms, h.lane, not h.is_cymbal))
+    deduped = []
+    for hit in new_hits:
+        if deduped and abs(hit.time_ms - deduped[-1].time_ms) < 1.0 \
+                and hit.lane == deduped[-1].lane:
+            continue
+        deduped.append(hit)
+
+    if snapped > 0:
+        logger.info(f"  Beat magnet: {snapped} hits pulled onto nearest beat/8th")
+
+    return replace(chart, hits=deduped)
+
+
+# ══════════════════════════════════════════════════════════════
+# Single-tom-per-onset constraint (drummer physics)
+# ══════════════════════════════════════════════════════════════
+
+def enforce_single_tom_per_onset(chart: DrumChart,
+                                 window_ms: float = 30.0) -> DrumChart:
+    """Allow at most ONE tom hit per onset.
+
+    A drummer cannot strike two toms simultaneously with one stick. When
+    multiple tom hits (lanes 2/3/4 with is_cymbal=False) appear within
+    ``window_ms`` of each other, keep only the highest-velocity one.
+    Cymbal+tom and snare+tom co-occurrences remain valid (different hands
+    or hand+foot).
+
+    This is a downstream safety net for cases where the classifier or
+    tom-refinement rescue introduces same-onset tom-tom chords (e.g.
+    HighTom+FloorTom) that confuse fast-roll patterns into chord stacks.
+    """
+    if not chart.hits:
+        return chart
+
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+    keep_mask = [True] * len(hits_sorted)
+    removed = 0
+
+    i = 0
+    while i < len(hits_sorted):
+        # Build a window of hits within window_ms of hits_sorted[i]
+        j = i
+        while j + 1 < len(hits_sorted) and \
+                (hits_sorted[j + 1].time_ms - hits_sorted[i].time_ms) <= window_ms:
+            j += 1
+        # Find tom hits in this window
+        tom_idxs = [k for k in range(i, j + 1)
+                    if (not hits_sorted[k].is_cymbal
+                        and hits_sorted[k].lane in (2, 3, 4)
+                        and keep_mask[k])]
+        if len(tom_idxs) > 1:
+            # Keep the highest-velocity one (proxy for highest-prob)
+            best = max(tom_idxs, key=lambda k: hits_sorted[k].velocity)
+            for k in tom_idxs:
+                if k != best:
+                    keep_mask[k] = False
+                    removed += 1
+        i = j + 1
+
+    if removed > 0:
+        logger.info(f"  Single-tom-per-onset: removed {removed} extra tom hits "
+                    f"(window={window_ms:.0f}ms)")
+
+    new_hits = [h for k, h in enumerate(hits_sorted) if keep_mask[k]]
+    return replace(chart, hits=new_hits)
+
+
+# ══════════════════════════════════════════════════════════════
+# Close-hands cap (catches visually-simultaneous hand stacks the
+# 1ms playability grouping misses)
+# ══════════════════════════════════════════════════════════════
+
+def cap_close_hands(chart: DrumChart, window_ms: float | None = None,
+                    max_window_ms: float = 60.0) -> DrumChart:
+    """Cap to 2 hands within a tempo-aware playability window.
+
+    ``resolve_playability`` only groups hits within +/-1ms (post-quantize
+    same-tick). After pattern fill / snare-roll fill / spectral reclass
+    add new hits that DON'T get re-quantized, two hand notes on adjacent
+    grid points (~30ms apart) can survive and look visually simultaneous
+    in fast fills, making them unplayable.
+
+    This pass groups hand notes (lanes 1-4) within ``window_ms`` (default
+    min(60ms, 1/8 beat)) and keeps at most 2 — preferring cymbals over toms
+    on shared lanes (matches resolve_playability semantics).
+    Kick (lane 0) is foot-only and never capped.
+    """
+    if not chart.hits:
+        return chart
+
+    if window_ms is None:
+        if chart.tempo_events:
+            ms_per_beat = 60_000.0 / chart.tempo_events[0].tempo_bpm
+            window_ms = min(max_window_ms, ms_per_beat / 8)
+        else:
+            window_ms = max_window_ms
+
+    hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
+    kept = []
+    capped = 0
+
+    i = 0
+    while i < len(hits_sorted):
+        # Build a window starting at hits_sorted[i]
+        window_start = hits_sorted[i].time_ms
+        j = i
+        while j < len(hits_sorted) and (hits_sorted[j].time_ms - window_start) <= window_ms:
+            j += 1
+        group = hits_sorted[i:j]
+
+        hand_hits = [h for h in group if h.lane >= 1]
+        non_hand = [h for h in group if h.lane < 1]
+
+        if len(hand_hits) > 2:
+            capped += 1
+            # Same priority as resolve_playability: toms first (drumsep
+            # arbiter validated), then by lane.
+            hand_hits.sort(key=lambda h: (h.is_cymbal, h.lane))
+            hand_hits = hand_hits[:2]
+
+        kept.extend(non_hand)
+        kept.extend(hand_hits)
+        i = j
+
+    kept.sort(key=lambda h: h.time_ms)
+    removed = len(chart.hits) - len(kept)
+    if capped > 0 or removed > 0:
+        logger.info(f"  Close-hands cap (window={window_ms:.0f}ms): {capped} groups capped, {removed} hits removed")
+
+    return replace(chart, hits=kept)
+
+
+# ══════════════════════════════════════════════════════════════
 # Combined post-processing pipeline
 def resolve_playability(chart: DrumChart) -> DrumChart:
     """Final playability cleanup after quantization.
@@ -1350,11 +1662,16 @@ def resolve_playability(chart: DrumChart) -> DrumChart:
 
     from collections import defaultdict
 
-    # Group hits by quantized time (within 1ms tolerance)
+    # Group hits by quantized time. We use a 6ms tolerance so that hits which
+    # the various passes added at slightly different sub-tick times still get
+    # deduped before export rounds them to the same tick. (At 480 tpb /
+    # 120 BPM, one tick = 1.04 ms, so 6ms is ~6 ticks — well below any
+    # legitimate grid spacing yet wide enough to catch float-jitter.)
+    LANE_DEDUP_MS = 6.0
     groups: list[tuple[float, list[DrumHit]]] = []
     hits_sorted = sorted(chart.hits, key=lambda h: h.time_ms)
     for hit in hits_sorted:
-        if groups and abs(hit.time_ms - groups[-1][0]) < 1.0:
+        if groups and abs(hit.time_ms - groups[-1][0]) < LANE_DEDUP_MS:
             groups[-1][1].append(hit)
         else:
             groups.append((hit.time_ms, [hit]))
@@ -1374,15 +1691,21 @@ def resolve_playability(chart: DrumChart) -> DrumChart:
             if len(lane_hits) == 1:
                 deduped_group.append(lane_hits[0])
             else:
-                # Multiple hits on same lane at same tick — keep cymbal if present
-                cymbals = [h for h in lane_hits if h.is_cymbal]
+                # Multiple hits on same lane at the same tick. Prefer TOM:
+                # the drumsep arbiter (validated >=98% Tom->Cym fix rate)
+                # only adds the tom variant when the physical signal in
+                # toms.wav clearly dominates cymbals.wav. If a tom is
+                # present here it's an explicit signal we should keep.
+                # If only cymbals (no tom), keep the loudest one.
                 toms = [h for h in lane_hits if not h.is_cymbal]
-                if cymbals:
-                    deduped_group.append(cymbals[0])
-                    if toms:
+                cymbals = [h for h in lane_hits if h.is_cymbal]
+                if toms:
+                    # Pick the highest-velocity tom (often only one)
+                    deduped_group.append(max(toms, key=lambda h: h.velocity))
+                    if cymbals:
                         lane_conflicts += 1
                 else:
-                    deduped_group.append(toms[0])
+                    deduped_group.append(max(cymbals, key=lambda h: h.velocity))
 
         # 2. Hand cap: max 2 hand notes (lanes 1-4)
         hand_hits = [h for h in deduped_group if h.lane >= 1]
@@ -1390,9 +1713,10 @@ def resolve_playability(chart: DrumChart) -> DrumChart:
 
         if len(hand_hits) > 2:
             hand_caps += 1
-            # Keep the 2 hands that best fit the song flow:
-            # Prioritize cymbal hits (groove) over toms (fills are rarer)
-            hand_hits.sort(key=lambda h: (not h.is_cymbal, h.lane))
+            # Keep the 2 most musical hands. Toms come first (drumsep
+            # arbiter is high-confidence and tom fills are intentional),
+            # then by lane to keep ergonomic groupings.
+            hand_hits.sort(key=lambda h: (h.is_cymbal, h.lane))
             hand_hits = hand_hits[:2]
 
         kept.extend(non_hand)
@@ -1511,6 +1835,9 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
         ticks_per_beat=chart.ticks_per_beat,
     )
     chart = resolve_playability(chart)
+    # Beat magnet: pull near-beat notes onto the actual beat/8th grid.
+    # Runs after the segment quantize stack so it sees post-aligned hits.
+    chart = snap_to_beat_positions(chart)
     if PP_LANE_FLIPS:
         chart = clean_isolated_lane_flips(chart)
     if PP_PATTERN_FILL:
@@ -1521,6 +1848,11 @@ def postprocess_chart(chart: DrumChart) -> DrumChart:
         chart = fill_snare_roll_gaps(chart)
     if PP_GHOST_KILL:
         chart = remove_isolated_hits(chart)
+    # Final close-hands cap: pattern_fill / snare_roll / phase3 can add
+    # hits that bypass resolve_playability's 1ms grouping. Run a wider
+    # tempo-aware cap so visually-simultaneous hand stacks (~1/8 beat
+    # apart) are reduced to 2 hands per group.
+    chart = cap_close_hands(chart)
 
     final_count = len(chart.hits)
     diff = final_count - original_count

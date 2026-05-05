@@ -57,8 +57,8 @@ class KeysCharter:
     
     def __init__(
         self,
-        detection_threshold: float = 0.3,  # Minimum keyboard presence ratio
-        min_notes: int = 20,  # Minimum notes to consider as keyboard track
+        detection_threshold: float = 0.55,  # Minimum keyboard presence score (was 0.3 — too lax, scored guitar-only songs as keys)
+        min_notes: int = 40,  # Minimum notes to consider as keyboard track (was 20)
     ):
         self.detection_threshold = detection_threshold
         self.min_notes = min_notes
@@ -79,9 +79,12 @@ class KeysCharter:
         prev_max = _os_k.environ.get("STRUM_BP_MAX_PITCH")
         _os_k.environ["STRUM_BP_MIN_PITCH"] = "21"
         _os_k.environ["STRUM_BP_MAX_PITCH"] = "108"
+        # min_amplitude=0.45 (was 0.30) — basic-pitch over-detects quiet
+        # leakage notes on the piano stem; raising filters bleed without
+        # losing real piano content (which is typically louder).
         try:
             pitch_notes = basic_pitch_predict(
-                Path(audio_path), min_amplitude=0.30,
+                Path(audio_path), min_amplitude=0.45,
             )
         finally:
             if prev_min is None:
@@ -163,7 +166,9 @@ class KeysCharter:
         
         return notes
     
-    def detect_keyboard_presence(self, audio_path: str) -> Tuple[bool, float, dict]:
+    def detect_keyboard_presence(
+        self, audio_path: str, guitar_stem_path: Optional[str] = None,
+    ) -> Tuple[bool, float, dict]:
         """
         Detect if the audio contains keyboard instruments.
         
@@ -189,6 +194,76 @@ class KeysCharter:
             logger.info("Audio too short for keyboard detection")
             return False, 0.0, {"reason": "too_short"}
         
+        # HARD GATE: piano stem RMS. With htdemucs_6s, songs without piano
+        # produce a near-silent piano.wav (Demucs leakage only). Reject before
+        # any further analysis so we don't hallucinate keys onto guitar songs.
+        rms_global = float(np.sqrt(np.mean(y.astype(np.float32) ** 2) + 1e-12))
+        # 40ms-frame RMS, top 10% percentile catches sparse piano hits while
+        # rejecting pure leakage which is uniformly low.
+        frame_len = int(0.040 * sr)
+        n_frames = len(y) // frame_len
+        active_frac = 0.0
+        if n_frames > 4:
+            frm = np.sqrt(np.mean(
+                y[: n_frames * frame_len].reshape(n_frames, frame_len).astype(np.float32) ** 2,
+                axis=1) + 1e-12)
+            # "Active" = above 5x the silent floor; piano pieces typically
+            # have >15% active frames, leakage <5%.
+            silent_floor = float(np.percentile(frm, 20))
+            active_frac = float(np.mean(frm > 5.0 * silent_floor))
+
+        if rms_global < 1e-3 or active_frac < 0.08:
+            logger.info(
+                f"Piano stem near-silent (rms={rms_global:.4f}, "
+                f"active_frac={active_frac:.2f}); no keys detected")
+            return False, 0.0, {
+                "reason": "stem_silent",
+                "stem_rms": rms_global,
+                "active_frac": active_frac,
+            }
+
+        # GUITAR-LEAKAGE GATE: htdemucs_6s often bleeds heavy guitar into the
+        # piano stem. If the piano-stem energy envelope correlates strongly
+        # with the guitar-stem envelope, the "piano" content is just guitar
+        # leakage — charting it produces guitar-shaped "keys" that double
+        # the guitar part. Reject when correlation > 0.75.
+        if guitar_stem_path:
+            try:
+                yg, _ = librosa.load(guitar_stem_path, sr=22050)
+                # Match length
+                m = min(len(yg), len(y))
+                if m > sr * 5:
+                    yg = yg[:m]; yp = y[:m]
+                    flen = int(0.080 * sr)  # 80ms frames
+                    nf = m // flen
+                    if nf > 16:
+                        ep = np.sqrt(np.mean(
+                            yp[: nf * flen].reshape(nf, flen).astype(np.float32) ** 2,
+                            axis=1) + 1e-12)
+                        eg = np.sqrt(np.mean(
+                            yg[: nf * flen].reshape(nf, flen).astype(np.float32) ** 2,
+                            axis=1) + 1e-12)
+                        # Use log envelopes (more perceptually meaningful)
+                        lep = np.log(ep); leg = np.log(eg)
+                        if lep.std() > 1e-3 and leg.std() > 1e-3:
+                            corr = float(np.corrcoef(lep, leg)[0, 1])
+                            # Also require guitar to be louder than piano
+                            # (true piano-led songs may still correlate, but
+                            # piano stem will dominate in those).
+                            ratio = float(np.mean(eg) / (np.mean(ep) + 1e-9))
+                            if corr > 0.75 and ratio > 1.5:
+                                logger.info(
+                                    f"Piano stem looks like guitar leakage "
+                                    f"(corr={corr:.2f}, gtr/pno={ratio:.2f}); "
+                                    f"no keys detected")
+                                return False, 0.0, {
+                                    "reason": "guitar_leakage",
+                                    "guitar_corr": corr,
+                                    "gtr_pno_ratio": ratio,
+                                }
+            except Exception as e:
+                logger.debug(f"Guitar-leakage check skipped: {e}")
+
         # Feature 1: Spectral flatness (keyboards often have cleaner harmonics)
         # Lower flatness = more tonal/harmonic content
         flatness = librosa.feature.spectral_flatness(y=y)[0]
@@ -279,19 +354,23 @@ class KeysCharter:
         self,
         audio_path: str,
         force: bool = False,  # Generate even if keyboard not detected
+        guitar_stem: Optional[str] = None,
     ) -> Tuple[Optional[List[KeyNote]], dict]:
         """
         Transcribe keyboard content from audio.
         
         Args:
-            audio_path: Path to audio file
+            audio_path: Path to piano/other stem audio file
             force: If True, generate keys even if not detected
+            guitar_stem: Optional path to guitar stem for leakage detection
             
         Returns:
             (notes, details) - notes is None if no keyboard detected and not forced
         """
         # Step 1: Detect keyboard presence
-        has_keys, confidence, detection_details = self.detect_keyboard_presence(audio_path)
+        has_keys, confidence, detection_details = self.detect_keyboard_presence(
+            audio_path, guitar_stem_path=guitar_stem,
+        )
         
         if not has_keys and not force:
             logger.info("No keyboard instruments detected, skipping keys track")
@@ -319,6 +398,20 @@ class KeysCharter:
         
         # Filter tiny notes (< 50ms)
         notes = [n for n in notes if n.end_time - n.start_time >= 0.05]
+
+        # Density gate: even a "real" piano section needs enough notes to
+        # be worth charting. Require >=0.40 notes/sec sustained over the
+        # active span (skips ambient pads / one-shot stingers / leakage).
+        if notes and not force:
+            span_s = notes[-1].start_time - notes[0].start_time
+            if span_s > 5.0:
+                density = len(notes) / span_s
+                if density < 0.40:
+                    logger.info(
+                        f"Piano density too low ({density:.2f} notes/s over "
+                        f"{span_s:.0f}s); skipping keys track")
+                    return None, {"detected": True, "notes": len(notes),
+                                  "reason": "low_density", "density": density}
         
         details = {
             "detected": True,

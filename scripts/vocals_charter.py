@@ -72,11 +72,11 @@ class VocalsCharter:
         whisper_model: str = "medium",  # tiny, base, small, medium, large
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         harmony_threshold: float = 0.3,  # Harmony volume relative to lead
-        pitch_change_threshold: float = 2.5,  # Semitones to trigger syllable split
+        pitch_change_threshold: float = 5.0,  # Semitones to trigger syllable split (raised — only true big leaps split)
         fetch_lyrics_online: bool = True,  # Try web sources before Whisper
-        timing_offset: float = -0.05,  # Base offset in seconds (reduced, dynamic alignment handles the rest)
+        timing_offset: float = 0.0,  # Static offset disabled — dynamic alignment handles latency
         dynamic_alignment: bool = True,  # Enable onset-based dynamic alignment
-        alignment_tolerance: float = 0.15,  # Max time to shift a word to reach onset (seconds)
+        alignment_tolerance: float = 0.06,  # Max time to shift a word to reach onset (was 0.15 — caused mis-snaps to nearby breaths/harmonics)
     ):
         self.whisper_model_name = whisper_model
         self.device = device
@@ -338,66 +338,77 @@ class VocalsCharter:
         aligned_words = []
         shifts = []
         used_onsets = set()  # Track which onsets we've already assigned
-        
+
         for i, word in enumerate(words):
             original_start = word['start']
             original_end = word['end']
             original_duration = original_end - original_start
-            
+
             # Find nearest UNUSED onset within tolerance window
             search_start = original_start - tolerance
             search_end = original_start + tolerance
-            
+
             # Get candidates that haven't been used
             candidates = []
             for j, t in enumerate(onset_times):
                 if j not in used_onsets and search_start <= t <= search_end:
                     candidates.append((j, t, abs(t - original_start)))
-            
+
             if candidates:
                 # Sort by distance and pick closest
                 candidates.sort(key=lambda x: x[2])
-                best_idx, best_onset, _ = candidates[0]
-                used_onsets.add(best_idx)
-                
-                new_start = best_onset
-                shift = new_start - original_start
-                shifts.append(shift)
+                best_idx, best_onset, best_dist = candidates[0]
+                # SAFETY: only snap if the chosen onset is clearly isolated
+                # (no other candidate within ~half the tolerance). When there
+                # are multiple onsets nearby (breaths, harmonics, layers) we
+                # have no way to pick the right one and snapping makes things
+                # worse \u2014 trust Whisper instead.
+                if len(candidates) > 1 and candidates[1][2] < tolerance * 0.6:
+                    new_start = original_start
+                    shifts.append(0)
+                else:
+                    used_onsets.add(best_idx)
+                    new_start = best_onset
+                    shifts.append(new_start - original_start)
             else:
                 # No onset nearby - keep original timing
                 new_start = original_start
                 shifts.append(0)
-            
-            # Preserve original duration
-            new_end = new_start + original_duration
-            
+
+            # Whisper often extends a word's end-time to fill the gap until
+            # the next word, which historically caused drift. We protect
+            # against word-to-word over-extension via the strict trim-prev
+            # pass below (clips prev.end to next.start - min_gap). For
+            # phrase-ending notes (no nearby next word), preserve Whisper's
+            # duration up to a moderate cap so sustained held-out notes
+            # actually ring out, but bounded so they don't trail forever.
+            # 2.5s covers typical sung syllables (incl. long phrase ends);
+            # earlier 4.0s was perceptibly too long on rapid songs.
+            new_end = new_start + min(original_duration, 2.5)
+
             aligned_words.append({
                 'word': word['word'],
                 'start': new_start,
-                'end': new_end
+                'end': new_end,
             })
-        
-        # CRITICAL: Enforce strict sequential ordering
-        # Words must be in time order AND not overlap
+
+        # CRITICAL: enforce strict sequential ordering by ALWAYS TRIMMING
+        # the previous word. Never push the current word forward — that's
+        # what caused song-long drift. If a word's snapped start lands before
+        # the previous word's end, the previous word was over-extended
+        # (Whisper bug) and we should clip it.
         for i in range(1, len(aligned_words)):
             prev = aligned_words[i - 1]
             curr = aligned_words[i]
-            
-            # If current word starts before previous word ends, push current forward
-            # This ensures words stay in sequence
             min_gap = 0.02  # 20ms gap between words
-            if curr['start'] < prev['end'] + min_gap:
-                # Push current word forward to not overlap with previous
-                shift = (prev['end'] + min_gap) - curr['start']
-                curr['start'] += shift
-                curr['end'] += shift
-            
-            # Also ensure previous doesn't extend past current
+
             if prev['end'] > curr['start'] - min_gap:
                 prev['end'] = curr['start'] - min_gap
-                # Ensure minimum duration of 50ms
                 if prev['end'] - prev['start'] < 0.05:
-                    prev['end'] = prev['start'] + 0.05
+                    # Prev start landed too close to curr start too — pull
+                    # prev start back rather than pushing curr forward.
+                    prev['start'] = max(0.0, curr['start'] - min_gap - 0.05)
+                    prev['end'] = curr['start'] - min_gap
         
         # Log alignment statistics
         if shifts:
@@ -538,7 +549,13 @@ class VocalsCharter:
         for event in note_events:
             start_time, end_time, pitch, velocity = event[:4]
             confidence = event[4] if len(event) > 4 else 1.0
-            
+
+            # Cap pitch-segment duration so a single sustained pitch (e.g.
+            # held vowel through a long phrase) doesn't ring on for many
+            # seconds. Charter standard: held notes rarely exceed ~2.5s.
+            if end_time - start_time > 2.5:
+                end_time = start_time + 2.5
+
             # Clamp pitch to vocal range
             midi_pitch = int(np.clip(pitch, self.VOCAL_MIDI_MIN, self.VOCAL_MIDI_MAX))
             
@@ -1231,21 +1248,33 @@ class VocalsCharter:
             for i in range(len(filtered) - 1):
                 current = filtered[i]
                 next_note = filtered[i + 1]
-                
-                min_gap = 0.01  # 10ms minimum gap
-                
+
+                # Connected notes (slides/melismas): allow them to TOUCH —
+                # YARG/CH draws a smooth slide when end == next.start.
+                # Forcing a 10ms gap on these caused the stair-step look.
+                if current.connects_to_next:
+                    if current.end_time != next_note.start_time:
+                        current.end_time = next_note.start_time
+                    if current.end_time - current.start_time < 0.03:
+                        current.end_time = current.start_time + 0.03
+                    continue
+
+                min_gap = 0.01  # 10ms minimum gap (only for unconnected notes)
+
                 # If current extends past next's start, truncate current
                 if current.end_time > next_note.start_time - min_gap:
                     current.end_time = next_note.start_time - min_gap
                     had_overlap = True
-                
-                # If still overlapping (start times too close), shift next note
+
+                # If still overlapping after truncation (start times too close),
+                # pull current's START back rather than shifting next forward
+                # — shifting next is what caused song-long timing drift.
                 if current.end_time > next_note.start_time - min_gap:
-                    shift = (current.end_time + min_gap) - next_note.start_time
-                    next_note.start_time += shift
-                    next_note.end_time += shift
+                    new_end = next_note.start_time - min_gap
+                    current.start_time = max(0.0, new_end - 0.05)
+                    current.end_time = new_end
                     had_overlap = True
-                
+
                 # Ensure current still has valid duration (at least 30ms)
                 if current.end_time - current.start_time < 0.03:
                     current.end_time = current.start_time + 0.03
@@ -1377,22 +1406,36 @@ class VocalsCharter:
             
             # Split word into syllables for pitch changes
             syllables = self._split_into_syllables(text, len(clamped_segments))
-            
-            # Create notes for each segment
+
+            # Create notes for each segment.
+            #
+            # Slide encoding (Rock Band / YARG / Clone Hero spec):
+            #   * Within a single sung syllable, additional notes on different
+            #     pitches use the lyric '+' (literal plus sign). YARG renders
+            #     these as a smooth slide line between the notes.
+            #   * '-' suffix means "continuation to the next syllable of the
+            #     same word" — NOT a slide. So if pyphen returned 2 syllables
+            #     for 2 segments, both get their own syllable text. If we have
+            #     MORE segments than syllables, the extras get '+'.
             for i, (seg_start, seg_end, seg_pitch) in enumerate(clamped_segments):
-                lyric = syllables[i] if i < len(syllables) else ""
+                if i < len(syllables) and syllables[i]:
+                    lyric = syllables[i]
+                else:
+                    lyric = '+'  # melisma continuation — triggers slide rendering
                 connects = i < len(clamped_segments) - 1
-                
+
                 notes.append(VocalNote(
                     start_time=seg_start,
                     end_time=seg_end,
                     midi_pitch=int(np.clip(seg_pitch, self.VOCAL_MIDI_MIN, self.VOCAL_MIDI_MAX)),
                     lyric=lyric,
-                    connects_to_next=connects
+                    connects_to_next=connects,
                 ))
-        
-        # Mark connected notes between adjacent words
-        self._mark_connections(notes)
+
+        # NOTE: previously called _mark_connections() here to slide between
+        # adjacent WORDS — but in RB/YARG that just produces two separate
+        # notes drawn close, not a slide line. Slides are an in-syllable
+        # concept (handled per-word above with the '+' lyric).
         
         total_words = len(words)
         total_notes = len(notes)
@@ -1501,67 +1544,96 @@ class VocalsCharter:
         times: np.ndarray,
         pitches: np.ndarray,
         confidences: np.ndarray,
-        threshold: float
+        threshold: float,
+        min_segment_dur: float = 0.20,  # 200ms — segments shorter than this get merged into neighbour
     ) -> list[tuple[float, float, float]]:
+        """Find sustained pitch segments within a word's time range.
+
+        Two-pass:
+          1. Median-filter the pitch contour (window=5 frames, ~115ms) to
+             squash pYIN jitter and vibrato.
+          2. Walk the smoothed contour and only emit a NEW segment when the
+             pitch differs from the running median by > threshold AND that
+             new pitch is held for at least min_segment_dur.
+
+        This keeps held notes as ONE note instead of stair-stepping every
+        time pYIN wobbles. Real melismas (>5 semitones, sustained) still split.
         """
-        Find distinct pitch segments within a time range.
-        
-        Returns list of (start_time, end_time, avg_pitch) tuples.
-        Merges consecutive frames with similar pitch, splits on significant changes.
-        """
-        segments = []
-        
-        # Filter to voiced frames only
         voiced_mask = pitches > 0
         if not voiced_mask.any():
-            return segments
-        
-        voiced_times = times[voiced_mask]
-        voiced_pitches = pitches[voiced_mask]
-        voiced_confs = confidences[voiced_mask]
-        
-        if len(voiced_times) == 0:
-            return segments
-        
-        # Start first segment
-        seg_start_time = voiced_times[0]
-        seg_pitches = [voiced_pitches[0]]
-        seg_confs = [voiced_confs[0]]
-        
-        for i in range(1, len(voiced_times)):
-            current_pitch = voiced_pitches[i]
-            avg_pitch = np.average(seg_pitches, weights=seg_confs) if sum(seg_confs) > 0 else np.mean(seg_pitches)
-            
-            # Check if pitch changed significantly
-            if abs(current_pitch - avg_pitch) > threshold:
-                # End current segment
-                seg_end_time = voiced_times[i - 1]
-                # Add small duration buffer
-                seg_end_time = min(seg_end_time + 0.02, voiced_times[i])
-                
-                segments.append((
-                    seg_start_time,
-                    seg_end_time,
-                    avg_pitch
-                ))
-                
-                # Start new segment
-                seg_start_time = voiced_times[i]
-                seg_pitches = [current_pitch]
-                seg_confs = [voiced_confs[i]]
+            return []
+        vt = times[voiced_mask]
+        vp = pitches[voiced_mask]
+        vc = confidences[voiced_mask]
+        if len(vt) < 3:
+            avg = float(np.average(vp, weights=vc) if vc.sum() > 0 else np.mean(vp))
+            return [(float(vt[0]), float(vt[-1] + 0.02), avg)]
+
+        # 1. Median filter (5-frame window) to remove pitch jitter
+        win = 5
+        half = win // 2
+        smoothed = vp.copy()
+        for i in range(len(vp)):
+            lo = max(0, i - half)
+            hi = min(len(vp), i + half + 1)
+            smoothed[i] = float(np.median(vp[lo:hi]))
+
+        # 2. Greedy segmentation with hold-duration requirement
+        segments: list[tuple[float, float, float]] = []
+        seg_start_idx = 0
+        seg_pitches = [smoothed[0]]
+        seg_confs = [vc[0]]
+
+        i = 1
+        while i < len(smoothed):
+            running_avg = float(np.average(seg_pitches, weights=seg_confs)
+                                if sum(seg_confs) > 0 else np.mean(seg_pitches))
+            if abs(smoothed[i] - running_avg) > threshold:
+                # Look ahead: is the new pitch SUSTAINED for >= min_segment_dur?
+                target_pitch = smoothed[i]
+                lookahead_end = i
+                while (lookahead_end < len(smoothed)
+                       and abs(smoothed[lookahead_end] - target_pitch) <= threshold):
+                    lookahead_end += 1
+                hold_dur = float(vt[min(lookahead_end - 1, len(vt) - 1)] - vt[i])
+                if hold_dur >= min_segment_dur:
+                    # Commit current segment, start new
+                    segments.append((
+                        float(vt[seg_start_idx]),
+                        float(vt[i - 1] + 0.02),
+                        running_avg,
+                    ))
+                    seg_start_idx = i
+                    seg_pitches = [smoothed[i]]
+                    seg_confs = [vc[i]]
+                else:
+                    # Brief excursion (vibrato/scoop) — keep in current segment
+                    seg_pitches.append(smoothed[i])
+                    seg_confs.append(vc[i])
             else:
-                seg_pitches.append(current_pitch)
-                seg_confs.append(voiced_confs[i])
-        
-        # Add final segment
+                seg_pitches.append(smoothed[i])
+                seg_confs.append(vc[i])
+            i += 1
+
+        # Final segment
         if seg_pitches:
-            avg_pitch = np.average(seg_pitches, weights=seg_confs) if sum(seg_confs) > 0 else np.mean(seg_pitches)
-            segments.append((
-                seg_start_time,
-                voiced_times[-1] + 0.02,  # Small buffer at end
-                avg_pitch
-            ))
-        
+            avg = float(np.average(seg_pitches, weights=seg_confs)
+                        if sum(seg_confs) > 0 else np.mean(seg_pitches))
+            segments.append((float(vt[seg_start_idx]), float(vt[-1] + 0.02), avg))
+
+        # Drop any segment shorter than min_segment_dur by merging into neighbour
+        if len(segments) > 1:
+            cleaned: list[tuple[float, float, float]] = []
+            for seg in segments:
+                s, e, p = seg
+                if e - s < min_segment_dur and cleaned:
+                    # Extend previous segment to absorb this short one
+                    ps, pe, pp = cleaned[-1]
+                    cleaned[-1] = (ps, e, pp)
+                else:
+                    cleaned.append(seg)
+            segments = cleaned
+
         return segments
     
     def _find_nearby_pitch(self, target_time: float, times: np.ndarray, pitches: np.ndarray) -> int:

@@ -1740,45 +1740,49 @@ def analyze_audio(audio_path: Path) -> dict:
     else:
         tempo_events.append(TempoEvent(tick=0, tempo_bpm=round(bpm, 2), time_ms=0.0))
 
-    # v25.7: phase offset = circular-mean phase of all beat times mod beat_period.
-    # The pipeline trims this many ms from song.ogg start and shifts all hits +
-    # tempo events by the same amount so bar lines (tick 0, bar_period, ...)
-    # align with audio downbeats in Clone Hero. Using the circular mean across
-    # ALL beats is far more robust than the first detected beat (which is
-    # often a librosa artifact ~70 ms in or a song-start pickup).
+    # v26 phase offset: use the FIRST detected beat, mod beat_period.
+    #
+    # Earlier versions averaged the phase of all 100+ librosa beats (circular
+    # mean).  That looked robust on paper but failed in practice: the
+    # grid-aligned BPM (e.g. 82.50) and the BPM librosa actually used to place
+    # beats (e.g. 83.35) do not match exactly, so beat phases drift through
+    # the modulo and the mean lands far from the true downbeat.  On Here
+    # Tonight that produced phase=571 ms when the real first downbeat is at
+    # 162 ms — every note was shifted >½ bar past the audio.
+    #
+    # The first beat is one precisely-located sample (within ±1 librosa hop ≈
+    # ±23 ms) and corresponds to an actual onset.  It is the best reference
+    # for "where does bar 1 start in the audio" and removes all averaging
+    # error.  All hits + the audio start are then shifted by the same value
+    # so MIDI tick 0 lines up with the audio's first downbeat in Clone Hero.
     beat_period_ms = 60_000.0 / bpm
     first_beat_ms = float(beat_times[0]) * 1000.0 if len(beat_times) > 0 else 0.0
-    if len(beat_times) >= 4:
-        bt_ms = np.asarray(beat_times) * 1000.0
-        phases = (bt_ms % beat_period_ms) / beat_period_ms * 2 * np.pi
-        mean_phase = float(np.arctan2(np.sin(phases).mean(), np.cos(phases).mean()))
-        if mean_phase < 0:
-            mean_phase += 2 * np.pi
-        phase_offset_ms = mean_phase / (2 * np.pi) * beat_period_ms
-        # Snap closer side: if past half period, trim forward to next beat instead.
+    if len(beat_times) >= 1:
+        phase_offset_ms = first_beat_ms % beat_period_ms
+        # Snap closer side: if past half period, trim forward to next beat.
         if phase_offset_ms > beat_period_ms / 2:
             phase_offset_ms -= beat_period_ms
-        # Only positive trims are physically meaningful (can't add audio).
         if phase_offset_ms < 0:
             phase_offset_ms += beat_period_ms
+        phase_source = "first_beat"
     else:
         phase_offset_ms = 0.0
+        phase_source = "none"
 
-    # v25.9 calibration: librosa beat_track centers beat times at frame
-    # boundaries (hop=512 @ sr=22050 ⇒ 23.2 ms/frame), and Clone Hero applies
-    # its own audio output latency.  Empirically, charts produced by v25.8 had
-    # notes drawing slightly *ahead* of bar lines, indicating bars rendered
-    # ~25 ms late.  Add a small extra trim so audio downbeats align even more
-    # tightly with bar boundaries.  Tune via STRUM_PHASE_CALIBRATE_MS.
-    calibrate_ms = float(os.environ.get("STRUM_PHASE_CALIBRATE_MS", "25.0"))
+    # Optional small calibration for Clone Hero's audio output latency.
+    # Default 0 — first_beat-derived phase is already accurate to a frame.
+    # Tune via STRUM_PHASE_CALIBRATE_MS if needed.
+    calibrate_ms = float(os.environ.get("STRUM_PHASE_CALIBRATE_MS", "0.0"))
     phase_offset_ms = phase_offset_ms + calibrate_ms
-    # Wrap into [0, beat_period_ms) so we always trim less than one beat.
     if phase_offset_ms >= beat_period_ms:
         phase_offset_ms -= beat_period_ms
+    if phase_offset_ms < 0:
+        phase_offset_ms += beat_period_ms
 
     logger.info(
         f"  Tempo: {bpm:.2f} BPM, {len(tempo_events)} tempo event(s); "
-        f"phase_offset={phase_offset_ms:.1f} ms (first beat at {first_beat_ms:.1f} ms)"
+        f"phase_offset={phase_offset_ms:.1f} ms ({phase_source}, "
+        f"first beat at {first_beat_ms:.1f} ms)"
     )
 
     return {
@@ -3009,6 +3013,22 @@ def build_chart(
             for cls in ranked[2:]:
                 fired.discard(cls)
 
+        # ── Tom-singleton constraint ──────────────────────────────
+        # Drummer physics: a single onset can be at most ONE tom hit
+        # (the stick that struck a tom can't strike a second tom in
+        # the same instant). When the multi-label classifier fires
+        # 2+ tom heads (HighTom=3, LowTom=5, FloorTom=7) for one
+        # onset — common in fast tom rolls where adjacent toms have
+        # similar spectral signatures — keep only the highest-prob
+        # tom. Cymbal+tom and snare+tom remain valid (different hands).
+        TOM_CLASSES = {3, 5, 7}
+        tom_fired = fired & TOM_CLASSES
+        if len(tom_fired) > 1:
+            best_tom = max(tom_fired, key=lambda c: class_probs[i, c])
+            for cls in tom_fired:
+                if cls != best_tom:
+                    fired.discard(cls)
+
         # ── V14-based crash veto ────────────────────────────────────
         # When the ensemble fires crash but V14's BiLSTM (with full-song
         # context) has low crash confidence, suppress the crash.
@@ -3835,6 +3855,155 @@ def apply_tom_refinement_filter(
     return chart
 
 
+def apply_cymbal_to_tom_rescue(
+    chart: DrumChart,
+    drums_path: Path,
+    tom_refinement: dict,
+    device: torch.device,
+) -> DrumChart:
+    """Rescue cymbals on shared lanes that are actually toms in a fill.
+
+    Symmetric counterpart to ``apply_tom_refinement_filter``: for every
+    CYMBAL hit on a shared lane (Yellow/Blue/Green) that sits inside a
+    fill context (i.e. within ±200 ms of a tom hit on a *different*
+    shared lane), run the TomRefinementCNN on the audio. If the CNN
+    confidently says the audio is a tom, flip cymbal→tom on the same
+    lane. This catches the common pattern where a tom roll across
+    Y→B→G has one or two intermediate hits the ensemble flipped to
+    cymbals.
+
+    Args:
+        chart: Chart after ``apply_tom_refinement_filter``.
+        drums_path: Path to drums audio stem.
+        tom_refinement: Loaded TomRefinementCNN bundle.
+        device: Torch device.
+
+    Returns:
+        Chart with rescued tom hits.
+    """
+    if not chart.hits:
+        return chart
+
+    # Tunables (env-overridable)
+    FILL_WINDOW_MS = float(os.environ.get("STRUM_TOM_RESCUE_WINDOW_MS", "200"))
+    TOM_CONF = float(os.environ.get("STRUM_TOM_RESCUE_TOM_CONF", "0.55"))
+    NOT_TOM_MAX = float(os.environ.get("STRUM_TOM_RESCUE_NOT_TOM_MAX", "0.30"))
+
+    SHARED_LANES = {2, 3, 4}
+
+    # Sort by time once, then build per-lane time arrays for fast neighbour lookups.
+    hits = list(chart.hits)
+    hits_sorted_idx = sorted(range(len(hits)), key=lambda i: hits[i].time_ms)
+
+    tom_times_by_lane: dict[int, list[float]] = {2: [], 3: [], 4: []}
+    for h in hits:
+        if h.lane in SHARED_LANES and not h.is_cymbal:
+            tom_times_by_lane[h.lane].append(h.time_ms)
+    for lane in tom_times_by_lane:
+        tom_times_by_lane[lane].sort()
+
+    def has_other_lane_tom(time_ms: float, this_lane: int) -> bool:
+        for lane, times in tom_times_by_lane.items():
+            if lane == this_lane or not times:
+                continue
+            # bisect window
+            lo, hi = 0, len(times)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if times[mid] < time_ms - FILL_WINDOW_MS:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            if lo < len(times) and times[lo] <= time_ms + FILL_WINDOW_MS:
+                return True
+        return False
+
+    # Collect candidate hits: cymbals on shared lanes with fill context
+    candidate_indices: list[int] = []
+    for i, h in enumerate(hits):
+        if h.lane in SHARED_LANES and h.is_cymbal and has_other_lane_tom(h.time_ms, h.lane):
+            candidate_indices.append(i)
+
+    if not candidate_indices:
+        return chart
+
+    # Load audio + spectrograms (mirror apply_tom_refinement_filter)
+    try:
+        y, sr = sf.read(str(drums_path), dtype='float32')
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        if sr != V14_SR:
+            audio_t = torch.from_numpy(y).float().unsqueeze(0)
+            audio_t = torchaudio.functional.resample(audio_t, sr, V14_SR)
+            y = audio_t.squeeze(0).numpy()
+        audio_tensor = torch.from_numpy(y).float().unsqueeze(0)
+        mel_spec = torch.log(tom_refinement["mel_transform"](audio_tensor) + 1e-8).squeeze(0)
+        cqt_spec = tom_refinement["cqt_transform"](audio_tensor).squeeze(0)
+    except Exception as e:
+        logger.warning(f"  Cymbal→tom rescue: audio load failed: {e}")
+        return chart
+
+    T = mel_spec.shape[-1]
+    half_ctx = TOM_REFINEMENT_CONTEXT_FRAMES // 2
+
+    mel_windows, cqt_windows, batch_to_cand = [], [], []
+    for j, hit_idx in enumerate(candidate_indices):
+        h = hits[hit_idx]
+        frame_idx = int(h.time_ms / 1000 * V14_SR / V14_HOP)
+        if frame_idx < half_ctx or frame_idx >= T - half_ctx:
+            continue
+        s, e = frame_idx - half_ctx, frame_idx + half_ctx + 1
+        m = mel_spec[:, s:e]
+        c = cqt_spec[:, s:e]
+        if m.shape[-1] < TOM_REFINEMENT_CONTEXT_FRAMES:
+            pad = TOM_REFINEMENT_CONTEXT_FRAMES - m.shape[-1]
+            m = torch.nn.functional.pad(m, (0, pad))
+            c = torch.nn.functional.pad(c, (0, pad))
+        mel_windows.append(m.unsqueeze(0))
+        cqt_windows.append(c.unsqueeze(0))
+        batch_to_cand.append(j)
+
+    if not mel_windows:
+        return chart
+
+    mel_batch = torch.stack(mel_windows).to(device)
+    cqt_batch = torch.stack(cqt_windows).to(device)
+    tom_model = tom_refinement["model"]
+    with torch.no_grad():
+        logits = tom_model(mel_batch, cqt_batch)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()  # (N, 4)
+
+    n_flipped = 0
+    new_hits = list(hits)
+    for batch_j, cand_j in enumerate(batch_to_cand):
+        hit_idx = candidate_indices[cand_j]
+        not_tom_p = float(probs[batch_j, 0])
+        tom_p = float(max(probs[batch_j, 1:]))  # best-of-tom class probability
+        if tom_p >= TOM_CONF and not_tom_p <= NOT_TOM_MAX:
+            h = new_hits[hit_idx]
+            new_hits[hit_idx] = DrumHit(
+                time_ms=h.time_ms,
+                tick=h.tick,
+                lane=h.lane,
+                is_cymbal=False,
+                velocity=h.velocity,
+            )
+            n_flipped += 1
+
+    if n_flipped > 0:
+        logger.info(
+            f"  Cymbal→tom rescue: {n_flipped}/{len(candidate_indices)} "
+            f"shared-lane cymbals in fill context flipped to toms"
+        )
+
+    return DrumChart(
+        hits=new_hits,
+        tempo_events=chart.tempo_events,
+        time_signatures=chart.time_signatures,
+        ticks_per_beat=chart.ticks_per_beat,
+    )
+
+
 # ══════════════════════════════════════════════════════════════
 # Phase 3 reclassification
 # ══════════════════════════════════════════════════════════════
@@ -4542,14 +4711,23 @@ def process_song(
         logger.info(f"  Tom refinement filter done ({time.time() - t0:.1f}s)")
         _trace_snapshot(chart, "after_tom_refine", song_folder)
 
+        # 6f2. Symmetric pass: rescue cymbals on shared lanes that are
+        # actually toms in a fill (Y/B/G roll where intermediate hits
+        # got flipped to cymbals by the ensemble).
+        t0 = time.time()
+        chart = apply_cymbal_to_tom_rescue(chart, drums_path, tom_refinement, device)
+        logger.info(f"  Cymbal→tom rescue done ({time.time() - t0:.1f}s)")
+        _trace_snapshot(chart, "after_cym2tom_rescue", song_folder)
+
     # 6g. FINAL hand-cap re-pass: phase3_*_rescue, complete_cymbal_patterns and
     # spectral_reclassify can add hits AFTER postprocess_chart's cap, leaving
     # 3+ hand notes at the same tick. Cap to 2 hands per drummer.
     try:
-        from scripts.chart_postprocess import resolve_playability, protect_tom_fills
+        from scripts.chart_postprocess import resolve_playability, protect_tom_fills, cap_close_hands
         if chart.hits:
             chart = protect_tom_fills(chart)
             chart = resolve_playability(chart)
+            chart = cap_close_hands(chart)
             _trace_snapshot(chart, "after_handcap", song_folder)
     except Exception as _e:
         logger.warning(f"  Final hand-cap pass failed: {_e}")

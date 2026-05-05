@@ -135,6 +135,40 @@ def export_drums_midi(
     hits_with_ticks.sort(key=lambda h: h.tick)
 
     # ------------------------------------------------------------------
+    # Lane+tick safety dedup. Upstream passes occasionally leak two hits
+    # on the same lane at the same export tick (one tom, one cymbal),
+    # producing duplicate `note_on` events that show up as a stacked
+    # gem in Clone Hero. Prefer the tom variant (drumsep arbiter is
+    # high-confidence); fall back to highest-velocity cymbal otherwise.
+    # ------------------------------------------------------------------
+    seen: dict[tuple[int, int], int] = {}  # (tick, lane) -> index in unique
+    unique: list = []
+    for h in hits_with_ticks:
+        key = (h.tick, h.lane)
+        if key not in seen:
+            seen[key] = len(unique)
+            unique.append(h)
+        else:
+            existing = unique[seen[key]]
+            # Prefer tom over cymbal; among same kind, prefer louder.
+            if (not h.is_cymbal and existing.is_cymbal) or (
+                h.is_cymbal == existing.is_cymbal and h.velocity > existing.velocity
+            ):
+                unique[seen[key]] = h
+    if len(unique) != len(hits_with_ticks):
+        # Brief log so regressions are visible without grepping
+        try:
+            from src.preprocessing.parsers.midi_parser import logger as _mp_log  # type: ignore
+        except Exception:
+            _mp_log = None
+        msg = f"  Export dedup: removed {len(hits_with_ticks) - len(unique)} same-lane duplicates"
+        if _mp_log:
+            _mp_log.info(msg)
+        else:
+            print(msg)
+    hits_with_ticks = unique
+
+    # ------------------------------------------------------------------
     # 2x bass pedal detection.
     # Clone Hero / YARG convention: MIDI note 95 = "expert+ kick" (the
     # 2nd pedal). When a player has only a single pedal, those notes are
