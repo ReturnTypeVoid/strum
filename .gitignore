@@ -53,3 +53,15 @@ multirun/
 # --- Misc ---
 *.log
 *.bak
+*.zip
+*.npy
+
+# --- Local pipeline artifacts ---
+demucs_temp/
+batch_results.json
+# Symlinks / cached charts dirs (point to /mnt/ml-data/...)
+songs/
+charts/
+sample-songs*/
+sample-songs-charts*/
+

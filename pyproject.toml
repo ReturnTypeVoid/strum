@@ -84,14 +84,11 @@ dev = [
     "pre-commit>=3.0.0",
 ]
 
-[project.scripts]
-strum = "src.cli:main"
-
 [project.urls]
-Homepage = "https://github.com/yourusername/strum"
-Documentation = "https://github.com/yourusername/strum/blob/main/docs/ARCHITECTURE.md"
-Repository = "https://github.com/yourusername/strum"
-Issues = "https://github.com/yourusername/strum/issues"
+Homepage = "https://github.com/opria123/strum"
+Documentation = "https://github.com/opria123/strum/blob/main/docs/ARCHITECTURE.md"
+Repository = "https://github.com/opria123/strum"
+Issues = "https://github.com/opria123/strum/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
