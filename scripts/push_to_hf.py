@@ -108,14 +108,14 @@ Held-out test set (from ~5 000 human-authored Pro Drum charts):
 | Drums onset detection (V14)            | Frame F1     | 93.9% |
 | Drums lane classification (6-ensemble) | Per-onset F1 | 85.2% |
 
-End-to-end vs ground-truth game charts (8 paired songs, Expert lane, ±100 ms tolerance):
+End-to-end vs ground-truth game charts (9 paired songs, Expert lane, ±100 ms tolerance):
 
 | Instrument | F1    | Precision | Recall |
 |------------|-------|-----------|--------|
-| Drums      | 75.8% | 72.6%     | 79.4%  |
-| Guitar     | 59.2% | 56.3%     | 62.4%  |
-| Bass       | 67.2% | 56.9%     | 82.1%  |
-| Vocals     | 49.9% | 53.6%     | 46.6%  |
+| Drums      | 75.9% | 72.4%     | 79.8%  |
+| Guitar     | 63.6% | 71.0%     | 57.5%  |
+| Bass       | 67.2% | 56.7%     | 82.3%  |
+| Vocals     | 50.1% | 54.1%     | 46.6%  |
 
 See the source repo's `benchmark_results.json` for per-song breakdown and
 `scripts/eval_benchmark.py` for the harness.
