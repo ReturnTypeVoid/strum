@@ -205,9 +205,11 @@ def main() -> None:
     api = HfApi()
     create_repo(args.repo_id, repo_type="model", exist_ok=True)
 
-    # Write model card
-    card_path = ROOT / "MODEL_CARD.md"
-    card_path.write_text(MODEL_CARD)
+    # Write model card to a temp file (don't pollute the repo root)
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(MODEL_CARD)
+        card_path = Path(fh.name)
     api.upload_file(
         path_or_fileobj=str(card_path),
         path_in_repo="README.md",
