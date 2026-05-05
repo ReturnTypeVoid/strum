@@ -72,13 +72,14 @@ The drums pipeline is the flagship component, using a two-stage detection-then-c
 
 Pro drums are fully supported with separate tom and cymbal markers per the Clone Hero MIDI specification.
 
-### Guitar & Bass — Neural Onset + Rule-Based Fret Mapping
+### Guitar & Bass — Neural Onset + Polyphonic Pitch + Fret Mapping
 
-Guitar and bass share the same hybrid architecture:
+Guitar and bass share the same hybrid architecture (`src/inference/guitar_hybrid_v2.py`):
 
-1. **Onset Detection** — `OnsetCRNN` neural network detects note onsets from separated stem audio
-2. **Pitch Estimation** — `librosa.pyin` extracts fundamental frequencies with harmonic analysis
-3. **Fret Mapping** — Rule-based system assigns MIDI pitches to 5 Clone Hero frets using register-based allocation with configurable open-note thresholds
+1. **Onset Detection** — `OnsetCRNN` (V2) detects note attacks on the Demucs-separated stem so vocals/drums don't trigger false positives.
+2. **Polyphonic Pitch** — [Spotify Basic Pitch](https://github.com/spotify/basic-pitch) transcribes simultaneous notes (chords + single notes), with bass-specific MIDI range overrides (24–67) when running on the bass stem.
+3. **Pitch → Fret Mapping** — Rule-based register allocation by default, with an optional learned `PitchToFretMapper` (V4) gated behind `STRUM_FRET_MAPPER=1`.
+4. **Section-Aware Density** — An optional `SectionRouter` modulates onset peak thresholds per section (verse/chorus/solo) to prevent over- or under-charting.
 
 ### Vocals — Whisper + pYIN Pitch Tracking
 
@@ -94,9 +95,11 @@ Guitar and bass share the same hybrid architecture:
 2. **Note Extraction** — `librosa.onset_detect` + `librosa.piptrack` extract individual key hits
 3. **Dual Output** — Both 5-lane simplified and Pro Keys (full piano range) tracks
 
-## Tempo Detection
+## Tempo & Grid Alignment
 
-STRUM uses a grid-alignment BPM refinement algorithm that searches ±5 BPM around an initial `librosa` estimate at 0.1 BPM resolution. Phase coherence is measured using circular statistics on beat positions relative to onset times, selecting the BPM with maximum alignment. This reduces grid error from ~175ms to ~35ms on typical tracks. Tempo changes are detected when BPM shifts exceed 3 BPM with at least 8 beat persistence.
+STRUM uses a grid-alignment BPM refinement algorithm that searches ±5 BPM around an initial `librosa` estimate at 0.1 BPM resolution, then snaps the beat-zero phase to the first detected onset. Phase coherence is measured with circular statistics on beat positions vs. onset times. After all transcribers run, every event from every instrument is shifted by the same `phase_offset_ms` and snapped to the 32nd-note grid — with per-lane roll detection to preserve fast double-strokes and tom rolls.
+
+This reduces post-snap grid error to <5 ms on the verified test set across drums, guitar, bass, vocals, and keys.
 
 ## Performance
 
@@ -120,111 +123,126 @@ Evaluated on a held-out test set from ~5,000 human-authored Clone Hero/YARG pro 
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/strum.git
+git clone https://github.com/oprialopez/strum.git
 cd strum
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+Model checkpoints (~6 GB) are not committed; download from the releases page or train locally (see below).
+
 ### Generate Charts for a Song
+
+Drop one or more `.wav` / `.mp3` / `.flac` files in a directory and run:
 
 ```bash
 # Full chart package (all instruments)
 python scripts/batch_pipeline.py \
   --songs-dir /path/to/songs/ \
-  --output-dir /path/to/output/ \
-  --instruments drums guitar bass vocals keys
+  --output-dir /path/to/output/
 
-# Drums only (production pipeline)
+# Drums only (faster, no Demucs vocals/keys/bass passes)
 python scripts/batch_infer_hybrid.py \
   --songs-dir /path/to/songs/ \
   --output-dir /path/to/output/
 ```
 
-### CLI Interface
+Each output folder contains `notes.mid`, `song.ini`, the source audio, and album art ready to drop into Clone Hero / YARG.
 
-```bash
-# Preprocess dataset (stem separation + chart parsing)
-strum preprocess --input-dir ./raw/ --output-dir ./processed/
+#### Backend selection (env vars)
 
-# Train drum model
-strum train drums --config configs/drums_v14.yaml
-
-# Single-song inference
-strum infer drums --input song.wav --output song_drums.mid
-
-# Full chart generation
-strum chart --input song.wav --output-dir ./charts/
-
-# Batch processing
-strum batch --manifest manifest.json --workers 4
-
-# Evaluate on test set
-strum evaluate --manifest test_manifest.json --instrument drums
-```
+| Variable | Values | Default | Effect |
+|----------|--------|---------|--------|
+| `STRUM_GUITAR_BACKEND` | `hybrid`, `neural`, `rule`, `basicpitch` | `hybrid` | Guitar transcription pipeline |
+| `STRUM_BASS_BACKEND`   | `hybrid`, `neural`, `rule`, `basicpitch` | `hybrid` | Bass transcription pipeline |
+| `STRUM_FRET_MAPPER`    | `0`, `1` | `0` | Use learned pitch→fret mapper instead of rules |
+| `STRUM_V12C_VARIANT`   | `default`, `community` | `default` | Swap drum classifier v12c checkpoint |
 
 ### Training Your Own Models
 
+All trainers are plain `python scripts/train_*.py` invocations driven by Hydra-style YAMLs in `configs/`. They expect a manifest of preprocessed windows produced by the matching `preprocess_*` / `build_*` script.
+
+| Model | Preprocess | Train | Config |
+|-------|------------|-------|--------|
+| Drum onset detector (V14 CRNN) | `preprocess_onset_windows.py` | `python scripts/train_onset_classifier.py` (also trains the onset head) | `configs/drums_v14.yaml` |
+| Drum classifier ensemble (V2/V6/V12c/V15/V16) | `preprocess_onset_windows.py` | `python scripts/train_onset_classifier.py --config configs/onset_classifier_v15.yaml` | `configs/onset_classifier*.yaml` |
+| Tom-vs-cymbal refinement | (uses Demucs drum stem at train time) | `python scripts/train_tom_refinement.py` | inline |
+| Guitar onset CRNN (V1/V2) | `build_guitar_manifest.py` → `preprocess_guitar_windows.py` | `python scripts/train_guitar_v1.py --config configs/guitar_v2.yaml` | `configs/guitar_v1.yaml`, `configs/guitar_v2.yaml` |
+| Pitch→fret mapper | `build_mapper_dataset.py` | `python scripts/train_fret_mapper.py` | inline |
+| Section classifier (verse/chorus/etc.) | `build_section_labels.py` → `preprocess_section_windows.py` | `python scripts/train_section_classifier.py` | inline |
+
+A typical training session for the drum onset detector looks like:
+
 ```bash
-# 1. Preprocess dataset (requires songs with existing .mid/.chart files)
 python scripts/preprocess_onset_windows.py \
-  --manifest /path/to/manifest.json \
-  --output-dir /path/to/processed/
+  --manifest /mnt/ml-data/manifest.json \
+  --output-dir /mnt/ml-data/onset_windows/
 
-# 2. Train onset detector
 python scripts/train_onset_classifier.py \
-  --config configs/onset_classifier.yaml
-
-# 3. Train guitar onset model
-python scripts/train_guitar_onset.py \
-  --config configs/drums_v14.yaml
+  --config configs/onset_classifier_v15.yaml
 ```
+
+W&B logging is enabled by default; set `WANDB_MODE=offline` to disable.
 
 ## Project Structure
 
 ```
 strum/
-├── configs/                          # Hydra configuration files
-│   ├── drums_v14.yaml                # Two-stage drums config
-│   ├── onset_classifier*.yaml        # Ensemble classifier configs
-│   ├── inference.yaml                # Inference settings
-│   └── preprocessing.yaml            # Preprocessing settings
-├── checkpoints/                      # Trained model weights
-│   ├── drums_v14/                    # Two-stage onset detector
-│   └── onset_classifier_v*/          # Ensemble classifier models
+├── configs/                          # YAML configs (one per trainable model)
+│   ├── drums_v14.yaml                # Two-stage drum onset CRNN
+│   ├── onset_classifier_v{6,12_clean,15,16}.yaml  # Drum classifier ensemble
+│   ├── guitar_v1.yaml, guitar_v2.yaml             # Guitar onset CRNN
+│   ├── inference.yaml, preprocessing.yaml
+├── checkpoints/                      # Trained weights (gitignored)
 ├── scripts/
-│   ├── batch_pipeline.py             # Full multi-instrument pipeline
-│   ├── batch_infer_hybrid.py         # Production drums pipeline
-│   ├── guitar_hybrid.py              # Guitar/bass transcription
-│   ├── vocals_charter.py             # Vocal transcription + lyrics
-│   ├── keys_charter.py               # Keyboard detection + charting
-│   ├── chart_postprocess.py          # Post-processing & quantization
-│   ├── train_onset_classifier.py     # Classifier training loop
-│   ├── train_guitar_onset.py         # Guitar onset training
-│   └── preprocess_onset_windows.py   # Dataset preprocessing
+│   ├── batch_pipeline.py             # ★ Full multi-instrument pipeline (entry point)
+│   ├── batch_infer_hybrid.py         # Drums-only production pipeline
+│   ├── chart_postprocess.py          # Snap-to-grid + rescue passes + quantization
+│   ├── chart_enhancer.py             # Difficulty reduction + lane balancing
+│   ├── vocals_charter.py             # Whisper + pYIN vocal transcription
+│   ├── keys_charter.py               # Keyboard detection + Pro Keys export
+│   ├── guitar_basicpitch.py          # Basic-Pitch guitar backend
+│   ├── bass_basicpitch.py            # Basic-Pitch bass backend
+│   ├── train_onset_classifier.py     # Drum classifier training
+│   ├── train_tom_refinement.py       # Tom-vs-cymbal refinement training
+│   ├── train_guitar_v1.py            # Guitar onset CRNN training
+│   ├── train_fret_mapper.py          # Learned pitch→fret mapper training
+│   ├── train_section_classifier.py   # Section (verse/chorus/etc.) training
+│   ├── preprocess_onset_windows.py   # Drum window preprocessing
+│   ├── preprocess_guitar_windows.py  # Guitar window preprocessing
+│   ├── preprocess_section_windows.py # Section window preprocessing
+│   ├── build_guitar_manifest.py      # Guitar dataset manifest builder
+│   ├── build_mapper_dataset.py       # Pitch→fret dataset builder
+│   └── build_section_labels.py       # Section label builder
 ├── src/
-│   ├── cli.py                        # Click CLI entry point
 │   ├── models/
-│   │   ├── drums_v13.py              # TwoStageDrumsCRNN architecture
-│   │   ├── onset_classifier.py       # OnsetClassifier architecture
-│   │   └── common.py                 # Shared layers
+│   │   ├── drums_v13.py              # TwoStageDrumsCRNN architecture (V14 ckpt)
+│   │   ├── onset_classifier.py       # 8-lane drum classifier
+│   │   ├── onset_classifier_dataset.py, onset_classifier_cached_dataset.py
+│   │   ├── drums_v14_dataset.py      # Drum onset dataset w/ bg-mel subtraction
+│   │   ├── tom_refinement.py         # Tom-vs-cymbal head
+│   │   ├── guitar_v1.py              # Guitar onset CRNN
+│   │   ├── section_classifier.py     # Section labeler
+│   │   ├── bg_mel.py                 # Background-mel subtraction
+│   │   └── common.py
+│   ├── inference/
+│   │   ├── guitar_hybrid_v2.py       # ★ Production guitar/bass backend
+│   │   ├── guitar_neural.py          # Neural-only guitar/bass backend
+│   │   ├── guitar_bass.py            # GuitarChart/Note/Chord dataclasses + rule backend
+│   │   ├── section_router.py         # Section-aware onset gating
+│   │   └── c3_rules.py               # C3 chart rules (5-fret reduction etc.)
 │   ├── preprocessing/
 │   │   ├── parsers/                  # .mid and .chart parsers
 │   │   ├── alignment.py              # Audio-chart alignment
 │   │   └── separation.py             # Demucs wrapper
-│   ├── inference/
-│   │   └── unified.py                # Unified inference engine
 │   ├── export/
-│   │   ├── midi.py                   # Pro drums MIDI export
+│   │   ├── midi.py                   # Pro drums + guitar/bass/keys MIDI export
 │   │   └── chart.py                  # .chart format export
-│   ├── evaluation/
-│   │   ├── metrics.py                # F1, precision, recall
-│   │   └── evaluate_drums.py         # Drums evaluation pipeline
-│   └── lyrics/
-│       └── fetcher.py                # LRCLIB + Lyrics.ovh fetcher
+│   └── lyrics/                       # LRCLIB + Lyrics.ovh fetcher
 ├── docs/
 │   ├── ARCHITECTURE.md               # Technical specification
 │   └── ROADMAP.md                    # Development milestones
-└── pyproject.toml                    # Dependencies & project config
+└── pyproject.toml
 ```
 
 ## Tech Stack
