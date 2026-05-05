@@ -622,7 +622,15 @@ class GuitarHybridV2Charter:
         # CRNN onsets the rule path uses, so onset count is preserved.
         learned_frets: list[tuple[int, ...]] | None = None
         if _os.environ.get("STRUM_GUITAR_FRET_MAPPER", "learned").lower() == "learned" and not harmonic_collapse:
-            learned_frets = _learned_fret_mapping(onset_times, buckets_full)
+            try:
+                learned_frets = _learned_fret_mapping(onset_times, buckets_full)
+            except Exception as _e:
+                # Honour the docstring contract: any failure in the learned
+                # pipeline (missing module, bad ckpt, shape mismatch, ...)
+                # silently falls back to the rule-based PitchToFretMapper
+                # below so PART GUITAR is still produced.
+                log.warning(f"guitar learned fret mapper unavailable, falling back to rule mapper ({_e})")
+                learned_frets = None
         mapper = PitchToFretMapper([n.midi for n in notes])
 
         # Stage 5: assemble events
