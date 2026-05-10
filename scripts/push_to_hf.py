@@ -61,6 +61,11 @@ PLAN: list[tuple[str, str, Path]] = [
     ("fret_mapper_v4",             "guitar/fret_mapper_v4.pt",                                  ROOT / "checkpoints/fret_mapper_v4.pt"),
     # Section
     ("section_classifier",         "section_classifier/best.pt",                                ROOT / "checkpoints/section_classifier/best.pt"),
+    # Paper artifacts (benchmark methodology + results)
+    ("paper_manifest_v4",          "paper/benchmark_manifest_v4.json",                          ROOT / "paper/benchmark_manifest_v4.json"),
+    ("paper_candidates_strict",    "paper/benchmark_candidates_strict.csv",                     ROOT / "paper/benchmark_candidates_strict.csv"),
+    ("paper_envelope_features",    "paper/audio_envelope_features.json",                        ROOT / "paper/audio_envelope_features.json"),
+    ("benchmark_results",          "benchmark_results.json",                                    ROOT / "benchmark_results.json"),
 ]
 
 
@@ -101,21 +106,27 @@ Source: <https://github.com/opria123/strum>
 
 ## Performance
 
-Held-out test set (from ~5 000 human-authored Pro Drum charts):
+Held-out test set (from 3,299 human-authored Pro Drum charts):
 
 | Component | Metric | Score |
 |-----------|--------|-------|
 | Drums onset detection (V14)            | Frame F1     | 93.9% |
 | Drums lane classification (6-ensemble) | Per-onset F1 | 85.2% |
 
-End-to-end vs ground-truth game charts (9 paired songs, Expert lane, ±100 ms tolerance):
+End-to-end vs ground-truth Clone Hero / YARG charts on an **in-envelope
+benchmark** of 29 songs sampled from a 3,299-song held-out pool. Songs were
+pre-screened with a single audio-feature gate (median Demucs `htdemucs_6s`
+drum-stem RMS ≥ 0.018, 1 s windows at 22050 Hz mono) to exclude acoustic /
+lo-fi tracks where source separation collapses. 24/65 sampled candidates
+(37%) failed the envelope. Eval is Expert difficulty, ±100 ms tolerance,
+with a per-song global offset search (±200 ms / 10 ms steps).
 
 | Instrument | F1    | Precision | Recall |
 |------------|-------|-----------|--------|
-| Drums      | 75.9% | 72.4%     | 79.8%  |
-| Guitar     | 63.6% | 71.0%     | 57.5%  |
-| Bass       | 67.2% | 56.7%     | 82.3%  |
-| Vocals     | 50.1% | 54.1%     | 46.6%  |
+| Drums      | 83.8% | 82.4%     | 85.4%  |
+| Guitar     | 65.1% | 74.5%     | 57.8%  |
+| Bass       | 69.4% | 65.8%     | 73.4%  |
+| Vocals     | 53.9% | 63.2%     | 47.0%  |
 
 See the source repo's `benchmark_results.json` for per-song breakdown and
 `scripts/eval_benchmark.py` for the harness.
@@ -177,11 +188,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--execute", action="store_true", help="actually upload (default = dry-run)")
     ap.add_argument("--only", nargs="*", help="restrict to named groups (see PLAN keys)")
+    ap.add_argument("--readme-only", action="store_true", help="upload only the model card README, skip checkpoints/artifacts")
     ap.add_argument("--repo-id", default=REPO_ID)
     args = ap.parse_args()
 
-    plan = PLAN if not args.only else [p for p in PLAN if p[0] in args.only]
-    if not plan:
+    plan = [] if args.readme_only else (PLAN if not args.only else [p for p in PLAN if p[0] in args.only])
+    if not plan and not args.readme_only:
         print(f"no entries matched --only {args.only!r}")
         sys.exit(1)
 

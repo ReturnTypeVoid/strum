@@ -68,3 +68,6 @@ sample-songs-charts*/
 configs/guitar_section_labels.json
 configs/guitar_v1_manifest*.json
 MODEL_CARD.md
+
+# Local logs (per-machine)
+logs/

@@ -36,35 +36,59 @@ def parse_track_events(
 ) -> dict[str, list[tuple[float, int]]]:
     """Return {'onsets': [(time_s, pitch), ...]} for the named track.
 
-    Onsets are pitch-coded so we can compute lane / pitch agreement on top of
-    onset F1.  Tom markers (110-112) are kept separately so we can fold them
-    back into PART DRUMS as cymbal-vs-tom flags.
+    Tempo events live on the conductor track (track 0 / 'TEMPO TRACK') in
+    Clone Hero / YARG MIDIs, not on the part track.  We build a global
+    tempo map first by merging every set_tempo event from every track at
+    its absolute tick, then walk the named part track using that map.
     """
     try:
         mid = mido.MidiFile(str(path), clip=True)
     except (EOFError, OSError, ValueError) as e:
         print(f"  [warn] failed to parse {path.name}: {e}")
         return {"onsets": [], "toms": []}
+
+    # 1) Build global (tick, tempo_us_per_beat) map across all tracks.
+    tempo_events: list[tuple[int, int]] = [(0, 500_000)]
+    for track in mid.tracks:
+        t = 0
+        for msg in track:
+            t += msg.time
+            if msg.type == "set_tempo":
+                tempo_events.append((t, msg.tempo))
+    tempo_events.sort(key=lambda x: x[0])
+    # Dedup at same tick keeping last
+    dedup: dict[int, int] = {}
+    for tick, tempo in tempo_events:
+        dedup[tick] = tempo
+    tempo_map = sorted(dedup.items())  # [(tick, tempo), ...]
+
+    def tick_to_seconds(target_tick: int) -> float:
+        """Integrate piecewise-constant tempo from tick 0 to target_tick."""
+        elapsed_s = 0.0
+        for i, (tick, tempo) in enumerate(tempo_map):
+            next_tick = tempo_map[i + 1][0] if i + 1 < len(tempo_map) else None
+            if next_tick is None or target_tick <= next_tick:
+                # Remaining ticks all at this tempo
+                elapsed_s += mido.tick2second(target_tick - tick, mid.ticks_per_beat, tempo)
+                return elapsed_s
+            elapsed_s += mido.tick2second(next_tick - tick, mid.ticks_per_beat, tempo)
+        return elapsed_s
+
+    # 2) Walk the named part track using cumulative ticks; convert to seconds.
     out: dict[str, list[tuple[float, int]]] = {"onsets": [], "toms": []}
     for track in mid.tracks:
         name = next((m.name for m in track if m.type == "track_name"), None)
         if name != track_name:
             continue
-        tempo = 500_000  # default 120 bpm in microseconds/beat
         elapsed_ticks = 0
-        elapsed_s = 0.0
-        # build a tempo-aware time line
         for msg in track:
             elapsed_ticks += msg.time
-            elapsed_s += mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
-            if msg.type == "set_tempo":
-                tempo = msg.tempo
-            elif msg.type == "note_on" and msg.velocity > 0:
+            if msg.type == "note_on" and msg.velocity > 0:
+                t_s = tick_to_seconds(elapsed_ticks)
                 if msg.note in TOM_MARKERS:
-                    out["toms"].append((elapsed_s, msg.note))
+                    out["toms"].append((t_s, msg.note))
                 else:
-                    out["onsets"].append((elapsed_s, msg.note))
-        # only first matching track
+                    out["onsets"].append((t_s, msg.note))
         break
     out["onsets"].sort()
     out["toms"].sort()
@@ -144,7 +168,35 @@ PARTS = [
 ]
 
 
-def evaluate_song(gt_path: Path, pred_path: Path, tol_s: float) -> dict[str, dict]:
+def _search_best_offset(
+    gt: list[tuple[float, int]],
+    pred: list[tuple[float, int]],
+    tol_s: float,
+    max_offset_s: float = 0.2,
+    step_s: float = 0.01,
+) -> tuple[float, dict[str, float]]:
+    """Sweep a global time offset applied to predictions, return (best_offset, metrics)."""
+    best_f1 = -1.0
+    best_off = 0.0
+    best_metrics: dict[str, float] = {}
+    n_steps = int(round(max_offset_s / step_s))
+    for k in range(-n_steps, n_steps + 1):
+        off = k * step_s
+        shifted = [(t + off, p) for t, p in pred]
+        m = onset_f1(gt, shifted, tol_s, require_lane_match=False)
+        if m["f1"] > best_f1:
+            best_f1 = m["f1"]
+            best_off = off
+            best_metrics = m
+    return best_off, best_metrics
+
+
+def evaluate_song(
+    gt_path: Path,
+    pred_path: Path,
+    tol_s: float,
+    offset_search: bool = False,
+) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for label, track_name, pitch_filter in PARTS:
         gt = [(t, p) for t, p in parse_track_events(gt_path, track_name)["onsets"] if pitch_filter(p)]
@@ -155,7 +207,12 @@ def evaluate_song(gt_path: Path, pred_path: Path, tol_s: float) -> dict[str, dic
         if not pred:
             results[label] = {"skipped": "no pred track", "gt_count": len(gt)}
             continue
-        results[label] = onset_f1(gt, pred, tol_s, require_lane_match=False)
+        if offset_search:
+            off, m = _search_best_offset(gt, pred, tol_s)
+            m["best_offset_ms"] = round(off * 1000.0, 1)
+            results[label] = m
+        else:
+            results[label] = onset_f1(gt, pred, tol_s, require_lane_match=False)
     return results
 
 
@@ -192,21 +249,35 @@ def main() -> None:
     ap.add_argument("--pred-dir", required=True, type=Path)
     ap.add_argument("--tolerance-ms", type=float, default=50.0)
     ap.add_argument("--out", type=Path, default=Path("benchmark_results.json"))
+    ap.add_argument(
+        "--global-offset-search",
+        action="store_true",
+        help="Per-song, per-instrument global offset sweep in ±200ms / 10ms steps to neutralize chart sync conventions.",
+    )
     args = ap.parse_args()
 
     tol_s = args.tolerance_ms / 1000.0
     per_song: dict[str, dict[str, dict]] = {}
 
+    def _swap_artist_title(name: str) -> str:
+        if " - " in name:
+            a, b = name.split(" - ", 1)
+            return f"{b} - {a}"
+        return name
+
+    pred_dirs = {p.name: p for p in args.pred_dir.iterdir() if p.is_dir()}
+
     for gt_song in sorted(args.gt_dir.iterdir()):
         if not gt_song.is_dir():
             continue
         gt_mid = gt_song / "notes.mid"
-        pred_mid = args.pred_dir / gt_song.name / "notes.mid"
-        if not gt_mid.exists() or not pred_mid.exists():
+        pred_song = pred_dirs.get(gt_song.name) or pred_dirs.get(_swap_artist_title(gt_song.name))
+        pred_mid = pred_song / "notes.mid" if pred_song else None
+        if not gt_mid.exists() or not pred_mid or not pred_mid.exists():
             print(f"[skip] {gt_song.name} (missing pred or gt midi)")
             continue
         print(f"[eval] {gt_song.name}")
-        per_song[gt_song.name] = evaluate_song(gt_mid, pred_mid, tol_s)
+        per_song[gt_song.name] = evaluate_song(gt_mid, pred_mid, tol_s, offset_search=args.global_offset_search)
 
     summary = aggregate(per_song)
 

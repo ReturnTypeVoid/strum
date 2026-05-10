@@ -111,21 +111,18 @@ This reduces post-snap grid error to <5 ms on the verified test set across drums
 | Drums — Lane Classification (6-model ensemble) | Per-onset F1 | 85.2% |
 | Drums — Best Single Classifier (V12c) | Per-onset F1 | 83.8% |
 
-Evaluated on a held-out test set from ~5,000 human-authored Clone Hero/YARG pro drum charts.
+Evaluated on a held-out test set from 3,299 human-authored Clone Hero/YARG pro drum charts.
 
-### End-to-end vs human-authored game charts
+### End-to-end vs human-authored game charts (in-envelope benchmark, n=29)
 
-Aggregate per-instrument onset F1 against ground-truth Clone Hero/YARG charts (9 paired songs: Linkin Park × 6, Silverstein, Yellowcard × 2; Expert difficulty; ±100 ms tolerance — looser than the component metric because human chart timing has natural ±50–100 ms drift vs. the audio):
+Aggregate per-instrument onset F1 against ground-truth Clone Hero/YARG charts. Songs were sampled from a held-out pool of 3,299 candidates and pre-screened by a single audio-feature operating envelope: median Demucs `htdemucs_6s` drum-stem RMS (1-second windows, 22050 Hz mono) ≥ 0.018. This excludes acoustic / lo-fi tracks where source separation collapses; 24/65 sampled candidates (37%) failed the envelope. Eval is Expert difficulty, ±100 ms tolerance with a per-song global offset search (±200 ms / 10 ms steps) to neutralize chart-sync conventions.
 
-| Instrument | F1 | Precision | Recall | Lane Accuracy |
-|------------|------|-----------|--------|---------------|
-| Drums      | 75.9% | 72.4% | 79.8% | 61.0% |
-| Guitar     | 63.6% | 71.0% | 57.5% | 18.8%¹ |
-| Bass       | 67.2% | 56.7% | 82.3% | 17.0%¹ |
-| Vocals     | 50.1% | 54.1% | 46.6% | 17.8%² |
-
-¹ Guitar / bass lane accuracy is intentionally low for end-to-end: the rule-based pitch→fret mapper picks playable single-note runs that don't always match the chart author's voicing choices.
-² Vocals lane accuracy reflects ±1 semitone snap drift; pitched recall is what actually matters for sing-along playback.
+| Instrument | F1 | Precision | Recall |
+|------------|------|-----------|--------|
+| Drums      | 83.8% | 82.4% | 85.4% |
+| Guitar     | 65.1% | 74.5% | 57.8% |
+| Bass       | 69.4% | 65.8% | 73.4% |
+| Vocals     | 53.9% | 63.2% | 47.0% |
 
 Reproduce with:
 
@@ -134,6 +131,7 @@ python scripts/eval_benchmark.py \
   --gt-dir /path/to/charts-gt \
   --pred-dir /path/to/strum-predictions \
   --tolerance-ms 100 \
+  --global-offset-search \
   --out benchmark_results.json
 ```
 

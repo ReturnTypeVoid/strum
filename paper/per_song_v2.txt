@@ -1,0 +1,32 @@
+songs evaluated: 30
+song                                               drums  guitar    bass  vocals
+Backstreet Boys - I Want It That Way               0.012   0.499   0.031   0.000
+Brandi Carlile - Mainstream Kid                    0.050   0.500   0.000   0.022
+Cody ChesnuTT - Look Good In Leather               0.133   0.099   0.286   0.000
+Death from Above 1979 - Trainwreck 1979            0.253   0.000   0.354   0.013
+Devon Gilfillian - All I Really Wanna Do           0.055   0.100   0.036   0.000
+Does It Offend You, Yeah - Dawn of the Dead        0.351   0.000   0.067   0.006
+Dolly Parton - Jolene                              0.497   0.000   0.005   0.010
+Duffy - Warwick Avenue                             0.427   0.312   0.000   0.017
+Eric Johnson - Camel_s Night Out                   0.020   0.073   0.443   0.000
+Extreme - Play With Me                             0.308   0.146   0.003   0.013
+In Flames - Disconnected                           0.196   0.177   0.004   0.000
+Laura Branigan - Gloria                            0.117   0.000   0.517   0.000
+Lil Uzi Vert - XO Tour Llif3                       0.000   0.000   0.000   0.010
+Megan Thee Stallion - Savage                       0.454   0.000   0.161   0.113
+Merle Haggard - Mama Tried                         0.142   0.147   0.018   0.293
+Milky Chance - Stolen Dance                        0.323   0.000   0.000   0.014
+Neil Young - Rockin_ in the Free World             0.439   0.000   0.000   0.000
+Netsky & Hybrid Minds - Let Me Hold You            0.171   0.005   0.000   0.008
+Nicole and Brynne Price - Sailor Moon English Th   0.712   0.427   0.764   0.489
+Orgy - Blue Monday                                 0.360   0.180   0.200   0.005
+Otis Redding - I_m Sick Y_all                      0.514   0.000   0.000   0.047
+Protest The Hero - Bloodmeat                       0.105   0.269   0.013   0.006
+Saliva - Always                                    0.000   0.000   0.000   0.000
+Seasick Steve - Summertime Boy                     0.587   0.019   0.154   0.021
+Stan Bush - The Touch                              0.062   0.111   0.002   0.017
+Suicidal Tendencies - War Inside My Head           0.196   0.234   0.004   0.000
+The Ataris - The Boys of Summer (Don Henley cove   0.399   0.330   0.388   0.207
+The Living End - Prisoner of Society               0.015   0.120   0.261   0.000
+The Midnight - Sunset                              0.906   0.772   0.883   0.558
+Warren G - Regulate (ft. Nate Dogg)                0.510   0.003   0.028   0.008

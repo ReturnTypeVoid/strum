@@ -1,0 +1,308 @@
+{
+  "seed": 20260509,
+  "tolerance_ms": 100,
+  "n_songs": 30,
+  "songs": [
+    {
+      "title": "Summertime Boy",
+      "artist": "Seasick Steve",
+      "genre": "acoustic",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Seasick Steve - Summertime Boy/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Seasick Steve - Summertime Boy/notes.mid",
+      "audio_sha256": "f8d5766051906465350c2c8ee38d098ef8fc64f72aa3b3777f3d87a6f8eff5b0",
+      "duration_s": 234.6,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "All I Really Wanna Do",
+      "artist": "Devon Gilfillian",
+      "genre": "acoustic",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Devon Gilfillian - All I Really Wanna Do/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Devon Gilfillian - All I Really Wanna Do/notes.mid",
+      "audio_sha256": "8a704c3aadb27b6d39fb0314ad0493cfb615740b66f8f455ba0acbe372eb26b9",
+      "duration_s": 225.4,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Stolen Dance",
+      "artist": "Milky Chance",
+      "genre": "acoustic",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Milky Chance - Stolen Dance/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Milky Chance - Stolen Dance/notes.mid",
+      "audio_sha256": "de923014d7c9b819dc214651650e1dcf3c0b3ef5ea957c1f57c811f0f8ef4876",
+      "duration_s": 307.2,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Mainstream Kid",
+      "artist": "Brandi Carlile",
+      "genre": "country",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Brandi Carlile - Mainstream Kid/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Brandi Carlile - Mainstream Kid/notes.mid",
+      "audio_sha256": "d40f8748124a5e0f39f60a49643ab7ec59830521a604fa82aad0276ae0e46a2e",
+      "duration_s": 262.8,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Mama Tried",
+      "artist": "Merle Haggard",
+      "genre": "country",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Merle Haggard - Mama Tried/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Merle Haggard - Mama Tried/notes.mid",
+      "audio_sha256": "e5cae80f285419aca830872744d1833e45d4803115345356323ad4ed03d859c3",
+      "duration_s": 135.0,
+      "source": "rock_band"
+    },
+    {
+      "title": "Jolene",
+      "artist": "Dolly Parton",
+      "genre": "country",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Dolly Parton - Jolene/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Dolly Parton - Jolene/notes.mid",
+      "audio_sha256": "405328c3312d01c503d126732bca5da90e786085e612f57a2b813c59cb255010",
+      "duration_s": 163.1,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Dawn of the Dead",
+      "artist": "Does It Offend You, Yeah",
+      "genre": "electronic",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Does It Offend You, Yeah - Dawn of the Dead/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Does It Offend You, Yeah - Dawn of the Dead/notes.mid",
+      "audio_sha256": "a27debcbcece6c22b7e73a837c655f732d531dd3c044a27c1a69b489a42c4fcc",
+      "duration_s": 218.3,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Sunset",
+      "artist": "The Midnight",
+      "genre": "electronic",
+      "audio_path": "/mnt/ml-data/training_songs/C3/The Midnight - Sunset/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/The Midnight - Sunset/notes.mid",
+      "audio_sha256": "8121b41277d76bb1044e188e7bef0141e24224b79cb29ab8397392e8cb7181e4",
+      "duration_s": 329.4,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Let Me Hold You",
+      "artist": "Netsky & Hybrid Minds",
+      "genre": "electronic",
+      "audio_path": "/mnt/ml-data/training_songs/FortniteFestival/Netsky & Hybrid Minds - Let Me Hold You/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/FortniteFestival/Netsky & Hybrid Minds - Let Me Hold You/notes.mid",
+      "audio_sha256": "70a97eafacf2c4780938ceea412e546ed0b2c91ad3646e52af077a96c5b06f91",
+      "duration_s": 202.6,
+      "source": "fortnite_festival"
+    },
+    {
+      "title": "Regulate (ft. Nate Dogg)",
+      "artist": "Warren G",
+      "genre": "hiphop",
+      "audio_path": "/mnt/ml-data/training_songs/FortniteFestival/Warren G - Regulate (ft. Nate Dogg)/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/FortniteFestival/Warren G - Regulate (ft. Nate Dogg)/notes.mid",
+      "audio_sha256": "e91998bd1e99f0b2f7e0727dae5c220a288336e1dabcfbf3ae10600e65920e37",
+      "duration_s": 248.8,
+      "source": "fortnite_festival"
+    },
+    {
+      "title": "Savage",
+      "artist": "Megan Thee Stallion",
+      "genre": "hiphop",
+      "audio_path": "/mnt/ml-data/training_songs/FortniteFestival/Megan Thee Stallion - Savage/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/FortniteFestival/Megan Thee Stallion - Savage/notes.mid",
+      "audio_sha256": "8841dddb71d227c90184350963d08bc009639587c9cf331c70e83ec91f2f3137",
+      "duration_s": 146.3,
+      "source": "fortnite_festival"
+    },
+    {
+      "title": "XO Tour Llif3",
+      "artist": "Lil Uzi Vert",
+      "genre": "hiphop",
+      "audio_path": "/mnt/ml-data/training_songs/FortniteFestival/Lil Uzi Vert - XO Tour Llif3/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/FortniteFestival/Lil Uzi Vert - XO Tour Llif3/notes.mid",
+      "audio_sha256": "a24e2dc0256bc5d989761f2fb354693de76f55425ecc192cba2e9197573d1376",
+      "duration_s": 190.4,
+      "source": "fortnite_festival"
+    },
+    {
+      "title": "Look Good In Leather",
+      "artist": "Cody ChesnuTT",
+      "genre": "jazz",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Cody ChesnuTT - Look Good In Leather/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Cody ChesnuTT - Look Good In Leather/notes.mid",
+      "audio_sha256": "768f63a50d6519d56fa49692df6e068675753798bca2ca4e588af35334af310e",
+      "duration_s": 232.2,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "I'm Sick Y'all",
+      "artist": "Otis Redding",
+      "genre": "jazz",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 2 DLC/Otis Redding - I'm Sick Y'all/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 2 DLC/Otis Redding - I'm Sick Y'all/notes.mid",
+      "audio_sha256": "81e7261cef658ec041d905cf687fab8fd99b2a062b4abea973c316e217f40f96",
+      "duration_s": 180.7,
+      "source": "rock_band"
+    },
+    {
+      "title": "Warwick Avenue",
+      "artist": "Duffy",
+      "genre": "jazz",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Band Hero/Band Hero/Duffy - Warwick Avenue/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Band Hero/Band Hero/Duffy - Warwick Avenue/notes.mid",
+      "audio_sha256": "e47b0a96bf943d97bddc225eb928895bffe210e510d7cf81a760ef9f2b03505b",
+      "duration_s": 233.1,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "War Inside My Head",
+      "artist": "Suicidal Tendencies",
+      "genre": "metal",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Metallica/Suicidal Tendencies - War Inside My Head/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Metallica/Suicidal Tendencies - War Inside My Head/notes.mid",
+      "audio_sha256": "79a6466483841a43c1d6b0ad4a26872c16e5deae00a9d24108aa0094df0dcc13",
+      "duration_s": 217.0,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Always",
+      "artist": "Saliva",
+      "genre": "metal",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero Warriors of Rock DLC/Saliva - Always/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero Warriors of Rock DLC/Saliva - Always/notes.mid",
+      "audio_sha256": "0bc2a0f95f5c83f20a0334734123eb8edc5774288c2bd27851c99ec62a438532",
+      "duration_s": 234.9,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Disconnected",
+      "artist": "In Flames",
+      "genre": "metal",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/In Flames - Disconnected/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/In Flames - Disconnected/notes.mid",
+      "audio_sha256": "1fa4d6299c99b062a02efaf9a59e291754fadd8324488576489ab52cda751639",
+      "duration_s": 217.0,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "I Want It That Way",
+      "artist": "Backstreet Boys",
+      "genre": "pop",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Backstreet Boys - I Want It That Way/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Backstreet Boys - I Want It That Way/notes.mid",
+      "audio_sha256": "3d9cebc523fa84e0c1d6cd45f533ebcab69de0b28cb65e99611f992c2e0b8350",
+      "duration_s": 223.4,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Gloria",
+      "artist": "Laura Branigan",
+      "genre": "pop",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Laura Branigan - Gloria/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Laura Branigan - Gloria/notes.mid",
+      "audio_sha256": "df34b8fb80115524d5f15b611793e8547124391e6a41e84c3387dd4cbf05abf2",
+      "duration_s": 298.1,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Sailor Moon English Theme Song",
+      "artist": "Nicole and Brynne Price",
+      "genre": "pop",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Nicole and Brynne Price - Sailor Moon English Theme Song/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Nicole and Brynne Price - Sailor Moon English Theme Song/notes.mid",
+      "audio_sha256": "ef58a4ba42314125fab195356739e0ddc65814cf0f6498e9272a0f0eab881f8b",
+      "duration_s": 99.6,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Bloodmeat",
+      "artist": "Protest The Hero",
+      "genre": "prog",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Protest The Hero - Bloodmeat/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Protest The Hero - Bloodmeat/notes.mid",
+      "audio_sha256": "208705113548a07ca988f269f03e4e3443827be380708e0c0e1bacca6f2ce6e6",
+      "duration_s": 245.3,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Play With Me",
+      "artist": "Extreme",
+      "genre": "prog",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Smash Hits/Guitar Hero - Smash Hits/Extreme - Play With Me/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Smash Hits/Guitar Hero - Smash Hits/Extreme - Play With Me/notes.mid",
+      "audio_sha256": "992707976e7b37f0b091376a3925448bb883a0d129f6294cca7b5ec117f5298a",
+      "duration_s": 211.2,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Camel's Night Out",
+      "artist": "Eric Johnson",
+      "genre": "prog",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Eric Johnson - Camel's Night Out/rhythm.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Eric Johnson - Camel's Night Out/notes.mid",
+      "audio_sha256": "3faa0ea2d8eb76cb7710f28727aed20784f0d9617c75f87974125859a91cc80c",
+      "duration_s": 324.0,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Prisoner of Society",
+      "artist": "The Living End",
+      "genre": "punk",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero World Tour/Guitar Hero World Tour/The Living End - Prisoner of Society/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero World Tour/Guitar Hero World Tour/The Living End - Prisoner of Society/notes.mid",
+      "audio_sha256": "bdedfa50ced483180998b249c3b34d4a16ed3881f05aa2f8198cdf08ccbf43b6",
+      "duration_s": 238.6,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Trainwreck 1979",
+      "artist": "Death from Above 1979",
+      "genre": "punk",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Death from Above 1979 - Trainwreck 1979/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Death from Above 1979 - Trainwreck 1979/notes.mid",
+      "audio_sha256": "8e6a223b3a21d13a04d52405c895c0f023f871c18bb29628f3f3435036fe4ad1",
+      "duration_s": 234.7,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "The Boys of Summer (Don Henley cover)",
+      "artist": "The Ataris",
+      "genre": "punk",
+      "audio_path": "/mnt/ml-data/training_songs/Custom/The Ataris - The Boys of Summer (Don Henley cover)/guitar.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Custom/The Ataris - The Boys of Summer (Don Henley cover)/notes.mid",
+      "audio_sha256": "3328b25d97bda29338383a8bda263aa965d5c3564f282832df536f534aa07c20",
+      "duration_s": 261.7,
+      "source": "custom"
+    },
+    {
+      "title": "Rockin' in the Free World",
+      "artist": "Neil Young",
+      "genre": "rock",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Warriors of Rock/Guitar Hero - Warriors of Rock/Neil Young - Rockin' in the Free World/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/Base Games/Guitar Hero - Warriors of Rock/Guitar Hero - Warriors of Rock/Neil Young - Rockin' in the Free World/notes.mid",
+      "audio_sha256": "5de2fe29430afac195aeea4c4f5c2408a669c5442b79b096a853154bfd5c1c1c",
+      "duration_s": 310.9,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "The Touch",
+      "artist": "Stan Bush",
+      "genre": "rock",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Stan Bush - The Touch/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero World Tour DLC/Stan Bush - The Touch/notes.mid",
+      "audio_sha256": "5e40932c0a06861e26b8b0f112948bef07c7fe656edb90d2fc7bc6ff2d6c6a38",
+      "duration_s": 252.5,
+      "source": "guitar_hero"
+    },
+    {
+      "title": "Blue Monday",
+      "artist": "Orgy",
+      "genre": "rock",
+      "audio_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero 5 DLC/Orgy - Blue Monday/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Guitar Hero/DLC/Guitar Hero 5 DLC/Orgy - Blue Monday/notes.mid",
+      "audio_sha256": "53e83e58fc019f1d5dbc4f1a11c45b8aff5fc4780e3cb0d17fe5e5562928de0b",
+      "duration_s": 274.5,
+      "source": "guitar_hero"
+    }
+  ],
+  "rejected": []
+}

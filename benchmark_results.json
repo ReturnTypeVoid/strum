@@ -1,397 +1,1413 @@
 {
   "tolerance_ms": 100.0,
   "per_song": {
-    "Linkin Park - Crawling": {
+    "4. Skatune Network - Spooky Scary Skeletons": {
       "drums": {
-        "f1": 0.7455068296189793,
-        "precision": 0.6826859776168532,
-        "recall": 0.8210609659540776,
-        "lane_accuracy": 0.3481195756991321,
-        "gt_count": 1263,
-        "pred_count": 1519,
-        "tp": 1037,
-        "fp": 482,
-        "fn": 226
+        "f1": 0.7353348729792147,
+        "precision": 0.7203619909502262,
+        "recall": 0.7509433962264151,
+        "lane_accuracy": 0.33542713567839194,
+        "gt_count": 1060,
+        "pred_count": 1105,
+        "tp": 796,
+        "fp": 309,
+        "fn": 264,
+        "best_offset_ms": 120.0
       },
       "guitar": {
-        "f1": 0.6626936829558999,
-        "precision": 0.922566371681416,
-        "recall": 0.5170489770613763,
-        "lane_accuracy": 0.2841726618705036,
-        "gt_count": 1613,
-        "pred_count": 904,
-        "tp": 834,
-        "fp": 70,
-        "fn": 779
-      },
-      "bass": {
-        "f1": 0.20961538461538462,
-        "precision": 0.12124582869855395,
-        "recall": 0.7730496453900709,
-        "lane_accuracy": 0.14678899082568808,
-        "gt_count": 141,
-        "pred_count": 899,
-        "tp": 109,
-        "fp": 790,
-        "fn": 32
-      },
-      "vocals": {
-        "f1": 0.40989399293286216,
-        "precision": 0.43283582089552236,
-        "recall": 0.38926174496644295,
-        "lane_accuracy": 0.25862068965517243,
-        "gt_count": 298,
-        "pred_count": 268,
-        "tp": 116,
-        "fp": 152,
-        "fn": 182
-      }
-    },
-    "Linkin Park - Faint": {
-      "drums": {
-        "f1": 0.9076339097427246,
-        "precision": 0.8819672131147541,
-        "recall": 0.9348392701998263,
-        "lane_accuracy": 0.8996282527881041,
-        "gt_count": 1151,
-        "pred_count": 1220,
-        "tp": 1076,
-        "fp": 144,
-        "fn": 75
-      },
-      "guitar": {
-        "f1": 0.6740638002773925,
-        "precision": 0.8086522462562395,
-        "recall": 0.5778834720570749,
-        "lane_accuracy": 0.1440329218106996,
-        "gt_count": 841,
-        "pred_count": 601,
-        "tp": 486,
-        "fp": 115,
-        "fn": 355
-      },
-      "bass": {
-        "f1": 0.7426326129666011,
-        "precision": 0.5924764890282131,
-        "recall": 0.9947368421052631,
-        "lane_accuracy": 0.0873015873015873,
-        "gt_count": 380,
-        "pred_count": 638,
-        "tp": 378,
-        "fp": 260,
-        "fn": 2
-      },
-      "vocals": {
-        "f1": 0.6213364595545136,
-        "precision": 0.6339712918660287,
-        "recall": 0.6091954022988506,
-        "lane_accuracy": 0.11320754716981132,
-        "gt_count": 435,
-        "pred_count": 418,
-        "tp": 265,
-        "fp": 153,
-        "fn": 170
-      }
-    },
-    "Linkin Park - New Divide": {
-      "drums": {
-        "f1": 0.861641541038526,
-        "precision": 0.7962848297213623,
-        "recall": 0.9386861313868613,
-        "lane_accuracy": 0.6866251944012441,
-        "gt_count": 1370,
-        "pred_count": 1615,
-        "tp": 1286,
-        "fp": 329,
-        "fn": 84
-      },
-      "guitar": {
-        "f1": 0.8427339084273391,
-        "precision": 0.7623049219687875,
-        "recall": 0.9421364985163204,
-        "lane_accuracy": 0.12598425196850394,
-        "gt_count": 674,
-        "pred_count": 833,
-        "tp": 635,
-        "fp": 198,
-        "fn": 39
-      },
-      "bass": {
-        "f1": 0.8677248677248677,
-        "precision": 0.7984420642648491,
-        "recall": 0.9501738122827347,
-        "lane_accuracy": 0.09146341463414634,
-        "gt_count": 863,
-        "pred_count": 1027,
-        "tp": 820,
-        "fp": 207,
-        "fn": 43
-      },
-      "vocals": {
-        "f1": 0.5168195718654434,
-        "precision": 0.5950704225352113,
-        "recall": 0.45675675675675675,
-        "lane_accuracy": 0.27218934911242604,
-        "gt_count": 370,
-        "pred_count": 284,
-        "tp": 169,
-        "fp": 115,
-        "fn": 201
-      }
-    },
-    "Linkin Park - Up from the Bottom": {
-      "drums": {
-        "f1": 0.8815848716794237,
-        "precision": 0.9270833333333334,
-        "recall": 0.8403433476394849,
-        "lane_accuracy": 0.7221654749744637,
-        "gt_count": 1165,
-        "pred_count": 1056,
-        "tp": 979,
-        "fp": 77,
-        "fn": 186
-      },
-      "guitar": {
-        "f1": 0.43692870201096895,
-        "precision": 0.6424731182795699,
-        "recall": 0.33102493074792244,
-        "lane_accuracy": 0.30962343096234307,
-        "gt_count": 722,
-        "pred_count": 372,
-        "tp": 239,
-        "fp": 133,
-        "fn": 483
-      },
-      "bass": {
-        "f1": 0.9148936170212766,
-        "precision": 0.9052631578947369,
-        "recall": 0.9247311827956989,
-        "lane_accuracy": 0.24651162790697675,
-        "gt_count": 465,
-        "pred_count": 475,
-        "tp": 430,
-        "fp": 45,
-        "fn": 35
-      },
-      "vocals": {
-        "f1": 0.6045949214026602,
-        "precision": 0.6830601092896175,
-        "recall": 0.5422993492407809,
-        "lane_accuracy": 0.12,
-        "gt_count": 461,
-        "pred_count": 366,
-        "tp": 250,
-        "fp": 116,
-        "fn": 211
-      }
-    },
-    "Linkin Park - Waiting for the End": {
-      "drums": {
-        "skipped": "no GT track"
-      },
-      "guitar": {
-        "skipped": "no GT track"
-      },
-      "bass": {
-        "skipped": "no GT track"
-      },
-      "vocals": {
-        "skipped": "no GT track"
-      }
-    },
-    "Linkin Park - What I've Done": {
-      "drums": {
-        "f1": 0.8527054108216433,
-        "precision": 0.80893536121673,
-        "recall": 0.9014830508474576,
-        "lane_accuracy": 0.7743830787309048,
-        "gt_count": 944,
-        "pred_count": 1052,
-        "tp": 851,
-        "fp": 201,
-        "fn": 93
-      },
-      "guitar": {
-        "f1": 0.8077645585472761,
-        "precision": 0.9267241379310345,
-        "recall": 0.7158712541620422,
-        "lane_accuracy": 0.07906976744186046,
+        "f1": 0.6416978776529338,
+        "precision": 0.7332382310984308,
+        "recall": 0.5704772475027747,
+        "lane_accuracy": 0.1517509727626459,
         "gt_count": 901,
-        "pred_count": 696,
-        "tp": 645,
-        "fp": 51,
-        "fn": 256
+        "pred_count": 701,
+        "tp": 514,
+        "fp": 187,
+        "fn": 387,
+        "best_offset_ms": -30.0
       },
       "bass": {
-        "f1": 0.9218390804597701,
-        "precision": 0.8550106609808102,
+        "skipped": "no GT track"
+      },
+      "vocals": {
+        "skipped": "no GT track"
+      }
+    },
+    "ABBA - Take a Chance on Me": {
+      "drums": {
+        "f1": 0.9186875891583453,
+        "precision": 0.9640718562874252,
+        "recall": 0.8773841961852861,
+        "lane_accuracy": 0.598136645962733,
+        "gt_count": 1835,
+        "pred_count": 1670,
+        "tp": 1610,
+        "fp": 60,
+        "fn": 225,
+        "best_offset_ms": 20.0
+      },
+      "guitar": {
+        "f1": 0.37070254110612855,
+        "precision": 0.2594142259414226,
+        "recall": 0.6492146596858639,
+        "lane_accuracy": 0.08870967741935484,
+        "gt_count": 191,
+        "pred_count": 478,
+        "tp": 124,
+        "fp": 354,
+        "fn": 67,
+        "best_offset_ms": 60.0
+      },
+      "bass": {
+        "f1": 0.6732813607370659,
+        "precision": 0.9205426356589147,
+        "recall": 0.5307262569832403,
+        "lane_accuracy": 0.32210526315789473,
+        "gt_count": 895,
+        "pred_count": 516,
+        "tp": 475,
+        "fp": 41,
+        "fn": 420,
+        "best_offset_ms": -40.0
+      },
+      "vocals": {
+        "f1": 0.6437613019891502,
+        "precision": 0.7091633466135459,
+        "recall": 0.5894039735099338,
+        "lane_accuracy": 0.27247191011235955,
+        "gt_count": 604,
+        "pred_count": 502,
+        "tp": 356,
+        "fp": 146,
+        "fn": 248,
+        "best_offset_ms": 0.0
+      }
+    },
+    "Amber Pacific - Poetically Pathetic": {
+      "drums": {
+        "f1": 0.8911845730027548,
+        "precision": 0.8479685452162516,
+        "recall": 0.9390420899854862,
+        "lane_accuracy": 0.6661514683153014,
+        "gt_count": 1378,
+        "pred_count": 1526,
+        "tp": 1294,
+        "fp": 232,
+        "fn": 84,
+        "best_offset_ms": 30.0
+      },
+      "guitar": {
+        "f1": 0.7235649546827795,
+        "precision": 0.8139337298215803,
+        "recall": 0.6512576478585996,
+        "lane_accuracy": 0.14822546972860126,
+        "gt_count": 1471,
+        "pred_count": 1177,
+        "tp": 958,
+        "fp": 219,
+        "fn": 513,
+        "best_offset_ms": -70.0
+      },
+      "bass": {
+        "f1": 0.8068068068068068,
+        "precision": 0.6761744966442953,
         "recall": 1.0,
-        "lane_accuracy": 0.14713216957605985,
-        "gt_count": 401,
-        "pred_count": 469,
-        "tp": 401,
-        "fp": 68,
-        "fn": 0
+        "lane_accuracy": 0.17990074441687345,
+        "gt_count": 806,
+        "pred_count": 1192,
+        "tp": 806,
+        "fp": 386,
+        "fn": 0,
+        "best_offset_ms": -120.0
       },
       "vocals": {
-        "f1": 0.4191919191919192,
-        "precision": 0.4322916666666667,
-        "recall": 0.4068627450980392,
-        "lane_accuracy": 0.1686746987951807,
-        "gt_count": 204,
-        "pred_count": 192,
-        "tp": 83,
-        "fp": 109,
-        "fn": 121
+        "f1": 0.6543665436654367,
+        "precision": 0.6981627296587927,
+        "recall": 0.6157407407407407,
+        "lane_accuracy": 0.0,
+        "gt_count": 432,
+        "pred_count": 381,
+        "tp": 266,
+        "fp": 115,
+        "fn": 166,
+        "best_offset_ms": 20.0
       }
     },
-    "Silverstein - I Am The Arsonist": {
+    "Attila - Pizza (2x Bass Pedal)": {
       "drums": {
-        "skipped": "no pred track",
-        "gt_count": 1193
+        "f1": 0.7425474254742547,
+        "precision": 0.7392086330935251,
+        "recall": 0.7459165154264973,
+        "lane_accuracy": 0.4391727493917275,
+        "gt_count": 1102,
+        "pred_count": 1112,
+        "tp": 822,
+        "fp": 290,
+        "fn": 280,
+        "best_offset_ms": 200.0
       },
       "guitar": {
-        "skipped": "no pred track",
-        "gt_count": 1543
+        "f1": 0.4372294372294372,
+        "precision": 0.8101604278074866,
+        "recall": 0.2994071146245059,
+        "lane_accuracy": 0.18811881188118812,
+        "gt_count": 1012,
+        "pred_count": 374,
+        "tp": 303,
+        "fp": 71,
+        "fn": 709,
+        "best_offset_ms": 190.0
       },
       "bass": {
-        "skipped": "no pred track",
-        "gt_count": 649
+        "f1": 0.4346190028222013,
+        "precision": 0.5226244343891403,
+        "recall": 0.3719806763285024,
+        "lane_accuracy": 0.2077922077922078,
+        "gt_count": 621,
+        "pred_count": 442,
+        "tp": 231,
+        "fp": 211,
+        "fn": 390,
+        "best_offset_ms": 140.0
       },
       "vocals": {
-        "skipped": "no pred track",
-        "gt_count": 140
+        "f1": 0.39330543933054396,
+        "precision": 0.4104803493449782,
+        "recall": 0.37751004016064255,
+        "lane_accuracy": 0.0,
+        "gt_count": 249,
+        "pred_count": 229,
+        "tp": 94,
+        "fp": 135,
+        "fn": 155,
+        "best_offset_ms": 190.0
       }
     },
-    "Yellowcard - Ocean Avenue": {
+    "August Burns Red - ...Baby One More Time (2x Bass Pedal)": {
       "drums": {
-        "f1": 0.39254934667778707,
-        "precision": 0.3725593667546174,
-        "recall": 0.41480611045828436,
-        "lane_accuracy": 0.37677053824362605,
-        "gt_count": 1702,
-        "pred_count": 1895,
-        "tp": 706,
-        "fp": 1189,
-        "fn": 996
+        "f1": 0.8952430465297634,
+        "precision": 0.9384196185286103,
+        "recall": 0.8558648111332008,
+        "lane_accuracy": 0.6364692218350755,
+        "gt_count": 2012,
+        "pred_count": 1835,
+        "tp": 1722,
+        "fp": 113,
+        "fn": 290,
+        "best_offset_ms": 80.0
       },
       "guitar": {
-        "f1": 0.27078384798099764,
-        "precision": 0.2920580700256191,
-        "recall": 0.2523985239852399,
-        "lane_accuracy": 0.16666666666666666,
-        "gt_count": 1355,
-        "pred_count": 1171,
-        "tp": 342,
-        "fp": 829,
-        "fn": 1013
+        "f1": 0.6755521706016756,
+        "precision": 0.8463740458015268,
+        "recall": 0.5621039290240811,
+        "lane_accuracy": 0.17474633596392333,
+        "gt_count": 1578,
+        "pred_count": 1048,
+        "tp": 887,
+        "fp": 161,
+        "fn": 691,
+        "best_offset_ms": 0.0
       },
       "bass": {
-        "f1": 0.40927536231884054,
-        "precision": 0.3807982740021575,
-        "recall": 0.4423558897243108,
-        "lane_accuracy": 0.1671388101983003,
-        "gt_count": 798,
+        "f1": 0.7939304943710229,
+        "precision": 0.8748651564185544,
+        "recall": 0.7267025089605734,
+        "lane_accuracy": 0.13316892725030827,
+        "gt_count": 1116,
         "pred_count": 927,
-        "tp": 353,
-        "fp": 574,
-        "fn": 445
+        "tp": 811,
+        "fp": 116,
+        "fn": 305,
+        "best_offset_ms": -40.0
       },
       "vocals": {
-        "f1": 0.21676300578034682,
-        "precision": 0.22935779816513763,
-        "recall": 0.2054794520547945,
-        "lane_accuracy": 0.10666666666666667,
-        "gt_count": 365,
-        "pred_count": 327,
-        "tp": 75,
-        "fp": 252,
-        "fn": 290
+        "f1": 0.536312849162011,
+        "precision": 0.5538461538461539,
+        "recall": 0.51985559566787,
+        "lane_accuracy": 0.4166666666666667,
+        "gt_count": 277,
+        "pred_count": 260,
+        "tp": 144,
+        "fp": 116,
+        "fn": 133,
+        "best_offset_ms": -100.0
       }
     },
-    "Yellowcard - Only One": {
+    "August Burns Red - We Wish You A Merry Christmas": {
       "drums": {
-        "f1": 0.8227712137486574,
-        "precision": 0.7812340642529322,
-        "recall": 0.8689733408961997,
-        "lane_accuracy": 0.4654046997389034,
-        "gt_count": 1763,
-        "pred_count": 1961,
-        "tp": 1532,
-        "fp": 429,
-        "fn": 231
+        "f1": 0.8849015317286653,
+        "precision": 0.8341584158415841,
+        "recall": 0.9422180801491147,
+        "lane_accuracy": 0.7893175074183977,
+        "gt_count": 1073,
+        "pred_count": 1212,
+        "tp": 1011,
+        "fp": 201,
+        "fn": 62,
+        "best_offset_ms": 170.0
       },
       "guitar": {
-        "f1": 0.7592378752886836,
-        "precision": 0.7484348321001707,
-        "recall": 0.7703573520796719,
-        "lane_accuracy": 0.21140684410646388,
-        "gt_count": 1707,
-        "pred_count": 1757,
-        "tp": 1315,
-        "fp": 442,
-        "fn": 392
+        "skipped": "no GT track"
       },
       "bass": {
-        "f1": 0.6894824707846411,
-        "precision": 0.5845718329794763,
-        "recall": 0.8402848423194303,
-        "lane_accuracy": 0.2639225181598063,
-        "gt_count": 983,
-        "pred_count": 1413,
-        "tp": 826,
-        "fp": 587,
-        "fn": 157
+        "skipped": "no GT track"
       },
       "vocals": {
-        "f1": 0.6277602523659306,
-        "precision": 0.7007042253521126,
-        "recall": 0.5685714285714286,
-        "lane_accuracy": 0.24623115577889448,
-        "gt_count": 350,
+        "skipped": "no GT track"
+      }
+    },
+    "Bayside - Blame It On Bad Luck": {
+      "drums": {
+        "f1": 0.861744966442953,
+        "precision": 0.8646464646464647,
+        "recall": 0.8588628762541806,
+        "lane_accuracy": 0.7632398753894081,
+        "gt_count": 1495,
+        "pred_count": 1485,
+        "tp": 1284,
+        "fp": 201,
+        "fn": 211,
+        "best_offset_ms": 200.0
+      },
+      "guitar": {
+        "f1": 0.6449369839200348,
+        "precision": 0.7697095435684648,
+        "recall": 0.5549738219895288,
+        "lane_accuracy": 0.24393530997304583,
+        "gt_count": 1337,
+        "pred_count": 964,
+        "tp": 742,
+        "fp": 222,
+        "fn": 595,
+        "best_offset_ms": -90.0
+      },
+      "bass": {
+        "f1": 0.7838910947249008,
+        "precision": 0.6801181102362205,
+        "recall": 0.9250334672021419,
+        "lane_accuracy": 0.21273516642547033,
+        "gt_count": 747,
+        "pred_count": 1016,
+        "tp": 691,
+        "fp": 325,
+        "fn": 56,
+        "best_offset_ms": 180.0
+      },
+      "vocals": {
+        "f1": 0.5627476882430648,
+        "precision": 0.6358208955223881,
+        "recall": 0.504739336492891,
+        "lane_accuracy": 0.0,
+        "gt_count": 422,
+        "pred_count": 335,
+        "tp": 213,
+        "fp": 122,
+        "fn": 209,
+        "best_offset_ms": 190.0
+      }
+    },
+    "Blue October - Hate Me": {
+      "drums": {
+        "f1": 0.903107861060329,
+        "precision": 0.8735632183908046,
+        "recall": 0.934720908230842,
+        "lane_accuracy": 0.7257085020242915,
+        "gt_count": 1057,
+        "pred_count": 1131,
+        "tp": 988,
+        "fp": 143,
+        "fn": 69,
+        "best_offset_ms": -10.0
+      },
+      "guitar": {
+        "f1": 0.6892857142857143,
+        "precision": 0.74373795761079,
+        "recall": 0.6422628951747088,
+        "lane_accuracy": 0.10621761658031088,
+        "gt_count": 601,
+        "pred_count": 519,
+        "tp": 386,
+        "fp": 133,
+        "fn": 215,
+        "best_offset_ms": 10.0
+      },
+      "bass": {
+        "f1": 0.6090116279069767,
+        "precision": 0.4419831223628692,
+        "recall": 0.9789719626168224,
+        "lane_accuracy": 0.33651551312649164,
+        "gt_count": 428,
+        "pred_count": 948,
+        "tp": 419,
+        "fp": 529,
+        "fn": 9,
+        "best_offset_ms": 60.0
+      },
+      "vocals": {
+        "f1": 0.6681175190424374,
+        "precision": 0.6747252747252748,
+        "recall": 0.6616379310344828,
+        "lane_accuracy": 0.016286644951140065,
+        "gt_count": 464,
+        "pred_count": 455,
+        "tp": 307,
+        "fp": 148,
+        "fn": 157,
+        "best_offset_ms": 20.0
+      }
+    },
+    "Bowling for Soup - Girl All the Bad Guys Want": {
+      "drums": {
+        "f1": 0.8717047451669596,
+        "precision": 0.8371308016877637,
+        "recall": 0.9092575618698442,
+        "lane_accuracy": 0.9022177419354839,
+        "gt_count": 1091,
+        "pred_count": 1185,
+        "tp": 992,
+        "fp": 193,
+        "fn": 99,
+        "best_offset_ms": 180.0
+      },
+      "guitar": {
+        "f1": 0.7704367301231804,
+        "precision": 0.7661469933184856,
+        "recall": 0.7747747747747747,
+        "lane_accuracy": 0.19622093023255813,
+        "gt_count": 888,
+        "pred_count": 898,
+        "tp": 688,
+        "fp": 210,
+        "fn": 200,
+        "best_offset_ms": 70.0
+      },
+      "bass": {
+        "f1": 0.9145527369826435,
+        "precision": 0.8435960591133005,
+        "recall": 0.9985422740524781,
+        "lane_accuracy": 0.3532846715328467,
+        "gt_count": 686,
+        "pred_count": 812,
+        "tp": 685,
+        "fp": 127,
+        "fn": 1,
+        "best_offset_ms": -90.0
+      },
+      "vocals": {
+        "f1": 0.6727272727272727,
+        "precision": 0.7433035714285714,
+        "recall": 0.6143911439114391,
+        "lane_accuracy": 0.21021021021021022,
+        "gt_count": 542,
+        "pred_count": 448,
+        "tp": 333,
+        "fp": 115,
+        "fn": 209,
+        "best_offset_ms": 130.0
+      }
+    },
+    "Crown the Empire - Johnny's Revenge": {
+      "drums": {
+        "f1": 0.889807976366322,
+        "precision": 0.8274725274725274,
+        "recall": 0.9623003194888179,
+        "lane_accuracy": 0.8087649402390438,
+        "gt_count": 1565,
+        "pred_count": 1820,
+        "tp": 1506,
+        "fp": 314,
+        "fn": 59,
+        "best_offset_ms": 20.0
+      },
+      "guitar": {
+        "f1": 0.7133243606998654,
+        "precision": 0.8811305070656692,
+        "recall": 0.5992085924250989,
+        "lane_accuracy": 0.27641509433962264,
+        "gt_count": 1769,
+        "pred_count": 1203,
+        "tp": 1060,
+        "fp": 143,
+        "fn": 709,
+        "best_offset_ms": -50.0
+      },
+      "bass": {
+        "f1": 0.13214285714285715,
+        "precision": 0.6324786324786325,
+        "recall": 0.07377866400797607,
+        "lane_accuracy": 0.20270270270270271,
+        "gt_count": 1003,
+        "pred_count": 117,
+        "tp": 74,
+        "fp": 43,
+        "fn": 929,
+        "best_offset_ms": -60.0
+      },
+      "vocals": {
+        "f1": 0.5800865800865802,
+        "precision": 0.589010989010989,
+        "recall": 0.5714285714285714,
+        "lane_accuracy": 0.08208955223880597,
+        "gt_count": 469,
+        "pred_count": 455,
+        "tp": 268,
+        "fp": 187,
+        "fn": 201,
+        "best_offset_ms": -100.0
+      }
+    },
+    "Demi Lovato & Joe Jonas - Wouldn't Change A Thing": {
+      "drums": {
+        "f1": 0.803426939552594,
+        "precision": 0.7542448614834674,
+        "recall": 0.8594704684317719,
+        "lane_accuracy": 0.23459715639810427,
+        "gt_count": 982,
+        "pred_count": 1119,
+        "tp": 844,
+        "fp": 275,
+        "fn": 138,
+        "best_offset_ms": 80.0
+      },
+      "guitar": {
+        "f1": 0.662605435801312,
+        "precision": 0.7170385395537525,
+        "recall": 0.6158536585365854,
+        "lane_accuracy": 0.12588401697312587,
+        "gt_count": 1148,
+        "pred_count": 986,
+        "tp": 707,
+        "fp": 279,
+        "fn": 441,
+        "best_offset_ms": 80.0
+      },
+      "bass": {
+        "f1": 0.6995336442371752,
+        "precision": 0.5423553719008265,
+        "recall": 0.9849906191369606,
+        "lane_accuracy": 0.2838095238095238,
+        "gt_count": 533,
+        "pred_count": 968,
+        "tp": 525,
+        "fp": 443,
+        "fn": 8,
+        "best_offset_ms": -90.0
+      },
+      "vocals": {
+        "f1": 0.5076923076923078,
+        "precision": 0.616,
+        "recall": 0.43177570093457945,
+        "lane_accuracy": 0.17316017316017315,
+        "gt_count": 535,
+        "pred_count": 375,
+        "tp": 231,
+        "fp": 144,
+        "fn": 304,
+        "best_offset_ms": 170.0
+      }
+    },
+    "Disney - He's A Pirate": {
+      "drums": {
+        "f1": 0.7102803738317757,
+        "precision": 0.7506172839506173,
+        "recall": 0.6740576496674058,
+        "lane_accuracy": 0.28618421052631576,
+        "gt_count": 451,
+        "pred_count": 405,
+        "tp": 304,
+        "fp": 101,
+        "fn": 147,
+        "best_offset_ms": 200.0
+      },
+      "guitar": {
+        "f1": 0.31950207468879666,
+        "precision": 0.6695652173913044,
+        "recall": 0.2098092643051771,
+        "lane_accuracy": 0.16883116883116883,
+        "gt_count": 367,
+        "pred_count": 115,
+        "tp": 77,
+        "fp": 38,
+        "fn": 290,
+        "best_offset_ms": 190.0
+      },
+      "bass": {
+        "f1": 0.11188811188811189,
+        "precision": 0.8888888888888888,
+        "recall": 0.05970149253731343,
+        "lane_accuracy": 0.25,
+        "gt_count": 268,
+        "pred_count": 18,
+        "tp": 16,
+        "fp": 2,
+        "fn": 252,
+        "best_offset_ms": 130.0
+      },
+      "vocals": {
+        "f1": 0.016260162601626018,
+        "precision": 0.5,
+        "recall": 0.008264462809917356,
+        "lane_accuracy": 0.0,
+        "gt_count": 242,
+        "pred_count": 4,
+        "tp": 2,
+        "fp": 2,
+        "fn": 240,
+        "best_offset_ms": -160.0
+      }
+    },
+    "Fort Minor - Remember the Name (ft. Styles of Beyond)": {
+      "drums": {
+        "f1": 0.6930779277318241,
+        "precision": 0.5998492840994725,
+        "recall": 0.8206185567010309,
+        "lane_accuracy": 0.21608040201005024,
+        "gt_count": 970,
+        "pred_count": 1327,
+        "tp": 796,
+        "fp": 531,
+        "fn": 174,
+        "best_offset_ms": 150.0
+      },
+      "guitar": {
+        "f1": 0.00851063829787234,
+        "precision": 0.013333333333333334,
+        "recall": 0.00625,
+        "lane_accuracy": 0.0,
+        "gt_count": 160,
+        "pred_count": 75,
+        "tp": 1,
+        "fp": 74,
+        "fn": 159,
+        "best_offset_ms": -200.0
+      },
+      "bass": {
+        "f1": 0.3198198198198198,
+        "precision": 0.4034090909090909,
+        "recall": 0.26492537313432835,
+        "lane_accuracy": 0.09859154929577464,
+        "gt_count": 268,
+        "pred_count": 176,
+        "tp": 71,
+        "fp": 105,
+        "fn": 197,
+        "best_offset_ms": -140.0
+      },
+      "vocals": {
+        "f1": 0.69693094629156,
+        "precision": 0.7991202346041055,
+        "recall": 0.6179138321995464,
+        "lane_accuracy": 0.027522935779816515,
+        "gt_count": 882,
+        "pred_count": 682,
+        "tp": 545,
+        "fp": 137,
+        "fn": 337,
+        "best_offset_ms": 110.0
+      }
+    },
+    "Foster the People - Don't Stop (Color on the Walls)": {
+      "drums": {
+        "f1": 0.8321951219512195,
+        "precision": 0.8642350557244174,
+        "recall": 0.8024459078080903,
+        "lane_accuracy": 0.8628370457209847,
+        "gt_count": 1063,
+        "pred_count": 987,
+        "tp": 853,
+        "fp": 134,
+        "fn": 210,
+        "best_offset_ms": -20.0
+      },
+      "guitar": {
+        "f1": 0.706959706959707,
+        "precision": 0.7183622828784119,
+        "recall": 0.6959134615384616,
+        "lane_accuracy": 0.11398963730569948,
+        "gt_count": 832,
+        "pred_count": 806,
+        "tp": 579,
+        "fp": 227,
+        "fn": 253,
+        "best_offset_ms": -20.0
+      },
+      "bass": {
+        "f1": 0.6937119675456389,
+        "precision": 0.5896551724137931,
+        "recall": 0.8423645320197044,
+        "lane_accuracy": 0.4093567251461988,
+        "gt_count": 406,
+        "pred_count": 580,
+        "tp": 342,
+        "fp": 238,
+        "fn": 64,
+        "best_offset_ms": -20.0
+      },
+      "vocals": {
+        "f1": 0.41964285714285715,
+        "precision": 0.6714285714285714,
+        "recall": 0.3051948051948052,
+        "lane_accuracy": 0.09929078014184398,
+        "gt_count": 462,
+        "pred_count": 210,
+        "tp": 141,
+        "fp": 69,
+        "fn": 321,
+        "best_offset_ms": 40.0
+      }
+    },
+    "Foster the People - Helena Beat": {
+      "drums": {
+        "f1": 0.8730556949322629,
+        "precision": 0.8622398414271556,
+        "recall": 0.8841463414634146,
+        "lane_accuracy": 0.6362068965517241,
+        "gt_count": 1968,
+        "pred_count": 2018,
+        "tp": 1740,
+        "fp": 278,
+        "fn": 228,
+        "best_offset_ms": 160.0
+      },
+      "guitar": {
+        "f1": 0.48805031446540875,
+        "precision": 0.5038961038961038,
+        "recall": 0.47317073170731705,
+        "lane_accuracy": 0.14948453608247422,
+        "gt_count": 410,
+        "pred_count": 385,
+        "tp": 194,
+        "fp": 191,
+        "fn": 216,
+        "best_offset_ms": 60.0
+      },
+      "bass": {
+        "f1": 0.6755407653910149,
+        "precision": 0.5892597968069666,
+        "recall": 0.7914230019493177,
+        "lane_accuracy": 0.2733990147783251,
+        "gt_count": 513,
+        "pred_count": 689,
+        "tp": 406,
+        "fp": 283,
+        "fn": 107,
+        "best_offset_ms": 0.0
+      },
+      "vocals": {
+        "f1": 0.5659090909090908,
+        "precision": 0.6657754010695187,
+        "recall": 0.49209486166007904,
+        "lane_accuracy": 0.30120481927710846,
+        "gt_count": 506,
+        "pred_count": 374,
+        "tp": 249,
+        "fp": 125,
+        "fn": 257,
+        "best_offset_ms": 30.0
+      }
+    },
+    "Hawthorne Heights - Ohio Is for Lovers": {
+      "drums": {
+        "f1": 0.871997131588383,
+        "precision": 0.9088191330343797,
+        "recall": 0.8380427291523087,
+        "lane_accuracy": 0.7713815789473685,
+        "gt_count": 1451,
+        "pred_count": 1338,
+        "tp": 1216,
+        "fp": 122,
+        "fn": 235,
+        "best_offset_ms": 50.0
+      },
+      "guitar": {
+        "f1": 0.7047443574389682,
+        "precision": 0.6455696202531646,
+        "recall": 0.7758620689655172,
+        "lane_accuracy": 0.2065359477124183,
+        "gt_count": 986,
+        "pred_count": 1185,
+        "tp": 765,
+        "fp": 420,
+        "fn": 221,
+        "best_offset_ms": -10.0
+      },
+      "bass": {
+        "f1": 0.7079646017699115,
+        "precision": 0.557006092254134,
+        "recall": 0.9711684370257967,
+        "lane_accuracy": 0.1703125,
+        "gt_count": 659,
+        "pred_count": 1149,
+        "tp": 640,
+        "fp": 509,
+        "fn": 19,
+        "best_offset_ms": -10.0
+      },
+      "vocals": {
+        "f1": 0.5282608695652173,
+        "precision": 0.5328947368421053,
+        "recall": 0.5237068965517241,
+        "lane_accuracy": 0.2139917695473251,
+        "gt_count": 464,
+        "pred_count": 456,
+        "tp": 243,
+        "fp": 213,
+        "fn": 221,
+        "best_offset_ms": 0.0
+      }
+    },
+    "Hikaru Utada - Sanctuary": {
+      "drums": {
+        "f1": 0.7668711656441717,
+        "precision": 0.7071024512884978,
+        "recall": 0.8376768428890543,
+        "lane_accuracy": 0.696,
+        "gt_count": 1343,
+        "pred_count": 1591,
+        "tp": 1125,
+        "fp": 466,
+        "fn": 218,
+        "best_offset_ms": 120.0
+      },
+      "guitar": {
+        "f1": 0.3624161073825503,
+        "precision": 0.3673469387755102,
+        "recall": 0.3576158940397351,
+        "lane_accuracy": 0.1574074074074074,
+        "gt_count": 302,
+        "pred_count": 294,
+        "tp": 108,
+        "fp": 186,
+        "fn": 194,
+        "best_offset_ms": 40.0
+      },
+      "bass": {
+        "f1": 0.06228373702422146,
+        "precision": 1.0,
+        "recall": 0.03214285714285714,
+        "lane_accuracy": 0.2222222222222222,
+        "gt_count": 840,
+        "pred_count": 27,
+        "tp": 27,
+        "fp": 0,
+        "fn": 813,
+        "best_offset_ms": -50.0
+      },
+      "vocals": {
+        "f1": 0.40601503759398494,
+        "precision": 0.5704225352112676,
+        "recall": 0.3151750972762646,
+        "lane_accuracy": 0.16666666666666666,
+        "gt_count": 514,
         "pred_count": 284,
+        "tp": 162,
+        "fp": 122,
+        "fn": 352,
+        "best_offset_ms": 140.0
+      }
+    },
+    "Ice Nine Kills - Me, Myself, & Hyde": {
+      "drums": {
+        "f1": 0.8250539956803457,
+        "precision": 0.7579365079365079,
+        "recall": 0.9052132701421801,
+        "lane_accuracy": 0.7427075542258789,
+        "gt_count": 1477,
+        "pred_count": 1764,
+        "tp": 1337,
+        "fp": 427,
+        "fn": 140,
+        "best_offset_ms": 200.0
+      },
+      "guitar": {
+        "f1": 0.6741957563312799,
+        "precision": 0.8027709861450693,
+        "recall": 0.5811209439528023,
+        "lane_accuracy": 0.233502538071066,
+        "gt_count": 1695,
+        "pred_count": 1227,
+        "tp": 985,
+        "fp": 242,
+        "fn": 710,
+        "best_offset_ms": -180.0
+      },
+      "bass": {
+        "skipped": "no GT track"
+      },
+      "vocals": {
+        "skipped": "no GT track"
+      }
+    },
+    "Kevin Sherwood - Abracadavre (ft. Elena Siegman)": {
+      "drums": {
+        "f1": 0.8517566409597258,
+        "precision": 0.8107667210440457,
+        "recall": 0.8971119133574007,
+        "lane_accuracy": 0.6056338028169014,
+        "gt_count": 2770,
+        "pred_count": 3065,
+        "tp": 2485,
+        "fp": 580,
+        "fn": 285,
+        "best_offset_ms": 10.0
+      },
+      "guitar": {
+        "f1": 0.774077868852459,
+        "precision": 0.9491206030150754,
+        "recall": 0.6535467128027682,
+        "lane_accuracy": 0.2157511581733951,
+        "gt_count": 2312,
+        "pred_count": 1592,
+        "tp": 1511,
+        "fp": 81,
+        "fn": 801,
+        "best_offset_ms": -80.0
+      },
+      "bass": {
+        "f1": 0.7642638463679376,
+        "precision": 0.6421889616463985,
+        "recall": 0.9436426116838488,
+        "lane_accuracy": 0.19227967953386743,
+        "gt_count": 1455,
+        "pred_count": 2138,
+        "tp": 1373,
+        "fp": 765,
+        "fn": 82,
+        "best_offset_ms": 90.0
+      },
+      "vocals": {
+        "f1": 0.5009940357852883,
+        "precision": 0.5575221238938053,
+        "recall": 0.4548736462093863,
+        "lane_accuracy": 0.21031746031746032,
+        "gt_count": 554,
+        "pred_count": 452,
+        "tp": 252,
+        "fp": 200,
+        "fn": 302,
+        "best_offset_ms": 10.0
+      }
+    },
+    "Kevin Sherwood - Beauty Of Annihilation (Ft. Elena Siegman) (2x Bass Pedal)": {
+      "drums": {
+        "f1": 0.818926296633303,
+        "precision": 0.7146638433033351,
+        "recall": 0.9588068181818182,
+        "lane_accuracy": 0.8081481481481482,
+        "gt_count": 1408,
+        "pred_count": 1889,
+        "tp": 1350,
+        "fp": 539,
+        "fn": 58,
+        "best_offset_ms": 30.0
+      },
+      "guitar": {
+        "f1": 0.7088,
+        "precision": 0.7731239092495636,
+        "recall": 0.654357459379616,
+        "lane_accuracy": 0.20428893905191872,
+        "gt_count": 1354,
+        "pred_count": 1146,
+        "tp": 886,
+        "fp": 260,
+        "fn": 468,
+        "best_offset_ms": -60.0
+      },
+      "bass": {
+        "f1": 0.7278208440999138,
+        "precision": 0.5988660524450744,
+        "recall": 0.9275521405049396,
+        "lane_accuracy": 0.32662721893491126,
+        "gt_count": 911,
+        "pred_count": 1411,
+        "tp": 845,
+        "fp": 566,
+        "fn": 66,
+        "best_offset_ms": -60.0
+      },
+      "vocals": {
+        "f1": 0.43773584905660373,
+        "precision": 0.5043478260869565,
+        "recall": 0.38666666666666666,
+        "lane_accuracy": 0.23275862068965517,
+        "gt_count": 300,
+        "pred_count": 230,
+        "tp": 116,
+        "fp": 114,
+        "fn": 184,
+        "best_offset_ms": 40.0
+      }
+    },
+    "Kevin Sherwood - Coming Home (ft. Elena Siegman)": {
+      "drums": {
+        "f1": 0.8069294501631935,
+        "precision": 0.7235479513732553,
+        "recall": 0.9120317820658342,
+        "lane_accuracy": 0.5569383945239577,
+        "gt_count": 1762,
+        "pred_count": 2221,
+        "tp": 1607,
+        "fp": 614,
+        "fn": 155,
+        "best_offset_ms": 40.0
+      },
+      "guitar": {
+        "f1": 0.6473988439306357,
+        "precision": 0.8588957055214724,
+        "recall": 0.5194805194805194,
+        "lane_accuracy": 0.175,
+        "gt_count": 1617,
+        "pred_count": 978,
+        "tp": 840,
+        "fp": 138,
+        "fn": 777,
+        "best_offset_ms": 10.0
+      },
+      "bass": {
+        "f1": 0.652249134948097,
+        "precision": 0.6110210696920584,
+        "recall": 0.699443413729128,
+        "lane_accuracy": 0.05570291777188329,
+        "gt_count": 1078,
+        "pred_count": 1234,
+        "tp": 754,
+        "fp": 480,
+        "fn": 324,
+        "best_offset_ms": -20.0
+      },
+      "vocals": {
+        "f1": 0.38242894056847543,
+        "precision": 0.47435897435897434,
+        "recall": 0.3203463203463203,
+        "lane_accuracy": 0.20270270270270271,
+        "gt_count": 231,
+        "pred_count": 156,
+        "tp": 74,
+        "fp": 82,
+        "fn": 157,
+        "best_offset_ms": -10.0
+      }
+    },
+    "Koji Kondo - Super Mario 64 Main Theme": {
+      "drums": {
+        "f1": 0.8793256433007985,
+        "precision": 0.8976449275362319,
+        "recall": 0.8617391304347826,
+        "lane_accuracy": 0.8193743693239153,
+        "gt_count": 1150,
+        "pred_count": 1104,
+        "tp": 991,
+        "fp": 113,
+        "fn": 159,
+        "best_offset_ms": 50.0
+      },
+      "guitar": {
+        "f1": 0.5553822152886116,
+        "precision": 0.9621621621621622,
+        "recall": 0.39035087719298245,
+        "lane_accuracy": 0.2303370786516854,
+        "gt_count": 456,
+        "pred_count": 185,
+        "tp": 178,
+        "fp": 7,
+        "fn": 278,
+        "best_offset_ms": -30.0
+      },
+      "bass": {
+        "f1": 0.9915254237288135,
+        "precision": 0.9943342776203966,
+        "recall": 0.9887323943661972,
+        "lane_accuracy": 0.27350427350427353,
+        "gt_count": 355,
+        "pred_count": 353,
+        "tp": 351,
+        "fp": 2,
+        "fn": 4,
+        "best_offset_ms": -20.0
+      },
+      "vocals": {
+        "skipped": "no GT track"
+      }
+    },
+    "Little Big Town - Little White Church": {
+      "drums": {
+        "f1": 0.33305439330543934,
+        "precision": 0.9660194174757282,
+        "recall": 0.2012133468149646,
+        "lane_accuracy": 0.005025125628140704,
+        "gt_count": 989,
+        "pred_count": 206,
         "tp": 199,
-        "fp": 85,
-        "fn": 151
+        "fp": 7,
+        "fn": 790,
+        "best_offset_ms": -160.0
+      },
+      "guitar": {
+        "f1": 0.6403385049365303,
+        "precision": 0.6061415220293725,
+        "recall": 0.6786248131539612,
+        "lane_accuracy": 0.14757709251101322,
+        "gt_count": 669,
+        "pred_count": 749,
+        "tp": 454,
+        "fp": 295,
+        "fn": 215,
+        "best_offset_ms": -60.0
+      },
+      "bass": {
+        "f1": 0.5266187050359711,
+        "precision": 0.5243553008595988,
+        "recall": 0.5289017341040463,
+        "lane_accuracy": 0.14207650273224043,
+        "gt_count": 346,
+        "pred_count": 349,
+        "tp": 183,
+        "fp": 166,
+        "fn": 163,
+        "best_offset_ms": -200.0
+      },
+      "vocals": {
+        "f1": 0.028513238289205704,
+        "precision": 0.875,
+        "recall": 0.014492753623188406,
+        "lane_accuracy": 0.0,
+        "gt_count": 483,
+        "pred_count": 8,
+        "tp": 7,
+        "fp": 1,
+        "fn": 476,
+        "best_offset_ms": -160.0
+      }
+    },
+    "Santana (ft. Rob Thomas) - Smooth": {
+      "drums": {
+        "f1": 0.7691870380898237,
+        "precision": 0.8595933926302414,
+        "recall": 0.6959876543209876,
+        "lane_accuracy": 0.16925351071692535,
+        "gt_count": 1944,
+        "pred_count": 1574,
+        "tp": 1353,
+        "fp": 221,
+        "fn": 591,
+        "best_offset_ms": 20.0
+      },
+      "guitar": {
+        "f1": 0.1248527679623086,
+        "precision": 0.4953271028037383,
+        "recall": 0.07142857142857142,
+        "lane_accuracy": 0.16981132075471697,
+        "gt_count": 742,
+        "pred_count": 107,
+        "tp": 53,
+        "fp": 54,
+        "fn": 689,
+        "best_offset_ms": -80.0
+      },
+      "bass": {
+        "f1": 0.6844014510278114,
+        "precision": 0.621978021978022,
+        "recall": 0.760752688172043,
+        "lane_accuracy": 0.11307420494699646,
+        "gt_count": 744,
+        "pred_count": 910,
+        "tp": 566,
+        "fp": 344,
+        "fn": 178,
+        "best_offset_ms": 30.0
+      },
+      "vocals": {
+        "skipped": "no pred track",
+        "gt_count": 500
+      }
+    },
+    "The Amity Affliction - Open Letter (2x Bass Pedal)": {
+      "drums": {
+        "f1": 0.8838475499092558,
+        "precision": 0.8639858072146659,
+        "recall": 0.9046439628482972,
+        "lane_accuracy": 0.7926078028747433,
+        "gt_count": 1615,
+        "pred_count": 1691,
+        "tp": 1461,
+        "fp": 230,
+        "fn": 154,
+        "best_offset_ms": 200.0
+      },
+      "guitar": {
+        "f1": 0.6598837209302325,
+        "precision": 0.8254545454545454,
+        "recall": 0.549636803874092,
+        "lane_accuracy": 0.197136563876652,
+        "gt_count": 1652,
+        "pred_count": 1100,
+        "tp": 908,
+        "fp": 192,
+        "fn": 744,
+        "best_offset_ms": 130.0
+      },
+      "bass": {
+        "f1": 0.6782006920415226,
+        "precision": 0.6839481555333998,
+        "recall": 0.6725490196078432,
+        "lane_accuracy": 0.11224489795918367,
+        "gt_count": 1020,
+        "pred_count": 1003,
+        "tp": 686,
+        "fp": 317,
+        "fn": 334,
+        "best_offset_ms": 130.0
+      },
+      "vocals": {
+        "f1": 0.5186170212765958,
+        "precision": 0.5145118733509235,
+        "recall": 0.5227882037533512,
+        "lane_accuracy": 0.0,
+        "gt_count": 373,
+        "pred_count": 379,
+        "tp": 195,
+        "fp": 184,
+        "fn": 178,
+        "best_offset_ms": 70.0
+      }
+    },
+    "The Ataris - The Boys of Summer (Don Henley cover)": {
+      "drums": {
+        "f1": 0.9091443693031461,
+        "precision": 0.8972721996517702,
+        "recall": 0.9213349225268176,
+        "lane_accuracy": 0.7852522639068564,
+        "gt_count": 1678,
+        "pred_count": 1723,
+        "tp": 1546,
+        "fp": 177,
+        "fn": 132,
+        "best_offset_ms": 180.0
+      },
+      "guitar": {
+        "f1": 0.6868997310795236,
+        "precision": 0.6119096509240246,
+        "recall": 0.7828371278458844,
+        "lane_accuracy": 0.2505592841163311,
+        "gt_count": 1142,
+        "pred_count": 1461,
+        "tp": 894,
+        "fp": 567,
+        "fn": 248,
+        "best_offset_ms": 200.0
+      },
+      "bass": {
+        "f1": 0.8144654088050314,
+        "precision": 0.6920507682030728,
+        "recall": 0.9894937917860553,
+        "lane_accuracy": 0.04247104247104247,
+        "gt_count": 1047,
+        "pred_count": 1497,
+        "tp": 1036,
+        "fp": 461,
+        "fn": 11,
+        "best_offset_ms": 120.0
+      },
+      "vocals": {
+        "f1": 0.6750700280112045,
+        "precision": 0.6905444126074498,
+        "recall": 0.6602739726027397,
+        "lane_accuracy": 0.0,
+        "gt_count": 365,
+        "pred_count": 349,
+        "tp": 241,
+        "fp": 108,
+        "fn": 124,
+        "best_offset_ms": 140.0
+      }
+    },
+    "The GAG Quartet - Le Internet Medley": {
+      "drums": {
+        "f1": 0.8427299703264095,
+        "precision": 0.8830845771144279,
+        "recall": 0.8059023836549376,
+        "lane_accuracy": 0.7028169014084507,
+        "gt_count": 1762,
+        "pred_count": 1608,
+        "tp": 1420,
+        "fp": 188,
+        "fn": 342,
+        "best_offset_ms": 110.0
+      },
+      "guitar": {
+        "f1": 0.7210007581501138,
+        "precision": 0.6631799163179917,
+        "recall": 0.7898671096345515,
+        "lane_accuracy": 0.2302839116719243,
+        "gt_count": 1204,
+        "pred_count": 1434,
+        "tp": 951,
+        "fp": 483,
+        "fn": 253,
+        "best_offset_ms": 30.0
+      },
+      "bass": {
+        "f1": 0.6996790463090327,
+        "precision": 0.5545058139534884,
+        "recall": 0.9478260869565217,
+        "lane_accuracy": 0.21363040629095675,
+        "gt_count": 805,
+        "pred_count": 1376,
+        "tp": 763,
+        "fp": 613,
+        "fn": 42,
+        "best_offset_ms": 60.0
+      },
+      "vocals": {
+        "f1": 0.15642458100558657,
+        "precision": 0.7368421052631579,
+        "recall": 0.0875,
+        "lane_accuracy": 0.0,
+        "gt_count": 160,
+        "pred_count": 19,
+        "tp": 14,
+        "fp": 5,
+        "fn": 146,
+        "best_offset_ms": -10.0
+      }
+    },
+    "The Midnight - Sunset": {
+      "drums": {
+        "f1": 0.9097693351424695,
+        "precision": 0.8418079096045198,
+        "recall": 0.9896678966789668,
+        "lane_accuracy": 0.645041014168531,
+        "gt_count": 1355,
+        "pred_count": 1593,
+        "tp": 1341,
+        "fp": 252,
+        "fn": 14,
+        "best_offset_ms": 0.0
+      },
+      "guitar": {
+        "f1": 0.7831715210355987,
+        "precision": 0.8231292517006803,
+        "recall": 0.7469135802469136,
+        "lane_accuracy": 0.23553719008264462,
+        "gt_count": 324,
+        "pred_count": 294,
+        "tp": 242,
+        "fp": 52,
+        "fn": 82,
+        "best_offset_ms": 10.0
+      },
+      "bass": {
+        "f1": 0.8857345635202272,
+        "precision": 1.0,
+        "recall": 0.7949044585987262,
+        "lane_accuracy": 0.08974358974358974,
+        "gt_count": 785,
+        "pred_count": 624,
+        "tp": 624,
+        "fp": 0,
+        "fn": 161,
+        "best_offset_ms": -90.0
+      },
+      "vocals": {
+        "f1": 0.5787965616045845,
+        "precision": 0.6332288401253918,
+        "recall": 0.5329815303430079,
+        "lane_accuracy": 0.29207920792079206,
+        "gt_count": 379,
+        "pred_count": 319,
+        "tp": 202,
+        "fp": 117,
+        "fn": 177,
+        "best_offset_ms": 50.0
+      }
+    },
+    "Yazoo - Only You": {
+      "drums": {
+        "f1": 0.8477751756440282,
+        "precision": 0.8786407766990292,
+        "recall": 0.8190045248868778,
+        "lane_accuracy": 0.8867403314917127,
+        "gt_count": 442,
+        "pred_count": 412,
+        "tp": 362,
+        "fp": 50,
+        "fn": 80,
+        "best_offset_ms": 40.0
+      },
+      "guitar": {
+        "f1": 0.09909909909909909,
+        "precision": 0.75,
+        "recall": 0.05305466237942122,
+        "lane_accuracy": 0.21212121212121213,
+        "gt_count": 622,
+        "pred_count": 44,
+        "tp": 33,
+        "fp": 11,
+        "fn": 589,
+        "best_offset_ms": -200.0
+      },
+      "bass": {
+        "f1": 0.9598470363288719,
+        "precision": 0.9653846153846154,
+        "recall": 0.9543726235741445,
+        "lane_accuracy": 0.250996015936255,
+        "gt_count": 263,
+        "pred_count": 260,
+        "tp": 251,
+        "fp": 9,
+        "fn": 12,
+        "best_offset_ms": -10.0
+      },
+      "vocals": {
+        "f1": 0.5492957746478874,
+        "precision": 0.6223404255319149,
+        "recall": 0.49159663865546216,
+        "lane_accuracy": 0.0,
+        "gt_count": 238,
+        "pred_count": 188,
+        "tp": 117,
+        "fp": 71,
+        "fn": 121,
+        "best_offset_ms": 120.0
       }
     }
   },
   "summary": {
     "drums": {
-      "f1": 0.7589957308396017,
-      "precision": 0.7236867610001938,
-      "recall": 0.7979269074588587,
-      "lane_accuracy": 0.6102852551225392,
-      "tp": 7467,
-      "fp": 2851,
-      "fn": 1891
+      "f1": 0.8382948611585573,
+      "precision": 0.8235449228113914,
+      "recall": 0.8535827867223216,
+      "lane_accuracy": 0.647882404307961,
+      "tp": 34355,
+      "fp": 7361,
+      "fn": 5893
     },
     "guitar": {
-      "f1": 0.6356117904856152,
-      "precision": 0.7098200189453742,
-      "recall": 0.575451171125048,
-      "lane_accuracy": 0.1883896797153025,
-      "tp": 4496,
-      "fp": 1838,
-      "fn": 3317
+      "f1": 0.6506586558954269,
+      "precision": 0.7446225319396051,
+      "recall": 0.5777521447624541,
+      "lane_accuracy": 0.19659346144247566,
+      "tp": 16028,
+      "fp": 5497,
+      "fn": 11714
     },
     "bass": {
-      "f1": 0.671525458042312,
-      "precision": 0.5672024623803009,
-      "recall": 0.8228727362937236,
-      "lane_accuracy": 0.17033463973470003,
-      "tp": 3317,
-      "fp": 2531,
-      "fn": 714
+      "f1": 0.6941774726671752,
+      "precision": 0.6584507042253521,
+      "recall": 0.7340036563071298,
+      "lane_accuracy": 0.19742143432715553,
+      "tp": 13651,
+      "fp": 7081,
+      "fn": 4947
     },
     "vocals": {
-      "f1": 0.500649069666811,
-      "precision": 0.5409069658719028,
-      "recall": 0.46596858638743455,
-      "lane_accuracy": 0.1780466724286949,
-      "tp": 1157,
-      "fp": 982,
-      "fn": 1326
+      "f1": 0.5393004464033452,
+      "precision": 0.6320529801324504,
+      "recall": 0.4702867842712132,
+      "lane_accuracy": 0.1320201173512154,
+      "tp": 4772,
+      "fp": 2778,
+      "fn": 5375
     }
   }
 }

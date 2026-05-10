@@ -1,0 +1,107 @@
+[
+  {
+    "song": "Bayside - Devotion and Desire",
+    "drums_f1": 0.9299935773924214,
+    "audible_pct": 0.9579439252336449,
+    "median_rms": 0.15653002262115479,
+    "onset_density": 3.9552452670610045
+  },
+  {
+    "song": "Benjamin Booker - Violent Shiver",
+    "drums_f1": 0.1276073619631902,
+    "audible_pct": 0.0,
+    "median_rms": 2.3352975404122844e-05,
+    "onset_density": 0.15350470078103245
+  },
+  {
+    "song": "Blue October - Into The Ocean",
+    "drums_f1": 0.8947368421052632,
+    "audible_pct": 0.7926829268292683,
+    "median_rms": 0.12234684824943542,
+    "onset_density": 3.499220627036966
+  },
+  {
+    "song": "Dwight Yoakam - Intentional Heartache",
+    "drums_f1": 0.5811170212765957,
+    "audible_pct": 0.15789473684210525,
+    "median_rms": 0.011955851688981056,
+    "onset_density": 3.8199074540709583
+  },
+  {
+    "song": "High School Musical Cast - Bet On It",
+    "drums_f1": 0.3453733766233766,
+    "audible_pct": 0.01485148514851485,
+    "median_rms": 3.0517578125e-05,
+    "onset_density": 0.0
+  },
+  {
+    "song": "Ice Nine Kills - Hip To Be Scared ft. Jacoby Shaddix",
+    "drums_f1": 0.6190944881889763,
+    "audible_pct": 0.8792270531400966,
+    "median_rms": 0.11722978949546814,
+    "onset_density": 3.054355053191489
+  },
+  {
+    "song": "Jack White - Lazaretto",
+    "drums_f1": 0.07441154138192863,
+    "audible_pct": 0.0,
+    "median_rms": 4.1197450627805665e-05,
+    "onset_density": 0.7718009612344838
+  },
+  {
+    "song": "Koji Kondo - Super Mario Bros. Medley",
+    "drums_f1": 0.7807768268597761,
+    "audible_pct": 0.45414847161572053,
+    "median_rms": 0.01746196113526821,
+    "onset_density": 2.851665190572436
+  },
+  {
+    "song": "Mr. Big - To Be With  You",
+    "drums_f1": 0.460161145926589,
+    "audible_pct": 0.009852216748768473,
+    "median_rms": 0.0065803537145257,
+    "onset_density": 3.6928776309310742
+  },
+  {
+    "song": "Nightwish - Amaranth",
+    "drums_f1": 0.17335058214747737,
+    "audible_pct": 0.0,
+    "median_rms": 1.6765023246989585e-05,
+    "onset_density": 0.0796812691415729
+  },
+  {
+    "song": "Richard Campbell - A Christmas Rock Medley (2x Bass Pedal Expert_)",
+    "drums_f1": 0.08938010571840461,
+    "audible_pct": 0.028070175438596492,
+    "median_rms": 6.553164712386206e-05,
+    "onset_density": 0.22294508685371991
+  },
+  {
+    "song": "Story of the Year - Until the Day I Die",
+    "drums_f1": 0.8976580044914982,
+    "audible_pct": 0.788135593220339,
+    "median_rms": 0.1324247121810913,
+    "onset_density": 3.415309404014731
+  },
+  {
+    "song": "The Both - Milwaukee",
+    "drums_f1": 0.3215413771320278,
+    "audible_pct": 0.0,
+    "median_rms": 1.605296529305633e-05,
+    "onset_density": 0.09885940098782114
+  },
+  {
+    "song": "The Lonely Island - Finest Girl (Bin Laden Song)",
+    "drums_f1": 0.9175108538350218,
+    "audible_pct": 0.8653846153846154,
+    "median_rms": 0.18872103095054626,
+    "onset_density": 3.290156085937663
+  },
+  {
+    "song": "t.A.T.u. - All the Things She Said",
+    "drums_f1": 0.7213930348258706,
+    "audible_pct": 0.8119266055045872,
+    "median_rms": 0.13228383660316467,
+    "onset_density": 3.9237114471738734
+  }
+]

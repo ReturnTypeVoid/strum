@@ -1,0 +1,7 @@
+TITLE-MATCH FLAGS (different artist credited):
+  bench: [metal   ] Saliva - Always
+    train: Blink-182 - Always  (rock_band)
+  bench: [metal   ] In Flames - Disconnected
+    train: Face to Face - Disconnected  (guitar_hero)
+  bench: [pop     ] Laura Branigan - Gloria
+    train: The Lumineers - Gloria  (rock_band_4)

@@ -1,0 +1,13 @@
+{
+  "_comment": "Ablation grid for the drums section. Each entry runs the full pipeline with the listed env-var overrides; everything else stays at its default.",
+  "ablations": [
+    {"name": "full_system",            "env": {}},
+    {"name": "no_drumsep_arbiter",     "env": {"STRUM_USE_DRUMSEP": "0", "STRUM_DRUMSEP_FINAL_PASS": "0"}},
+    {"name": "no_phase3",              "env": {"STRUM_PHASE3": "0", "STRUM_RESCUE": "0", "STRUM_RECLASS": "0"}},
+    {"name": "no_tom_refinement_cnn",  "env": {"STRUM_TOM_REFINEMENT": "0"}},
+    {"name": "no_snare_hh_roll_veto",  "env": {"STRUM_SNARE_HH_ROLL_VETO": "0"}},
+    {"name": "no_crash_ride_costack",  "env": {"STRUM_CR_COSTACK_VETO": "0"}},
+    {"name": "no_fill_rescue",         "env": {"STRUM_FILL_RESCUE": "0"}},
+    {"name": "no_mc_hybrid",           "env": {"STRUM_MC_HYBRID": "0", "STRUM_MC_ONSET": "0"}}
+  ]
+}

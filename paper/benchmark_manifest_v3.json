@@ -1,0 +1,198 @@
+{
+  "seed": 20260509,
+  "tolerance_ms": 100,
+  "n_songs": 19,
+  "songs": [
+    {
+      "title": "Lazaretto",
+      "artist": "Jack White",
+      "genre": "acoustic",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Jack White - Lazaretto/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Jack White - Lazaretto/notes.mid",
+      "audio_sha256": "1afcf5de3d368541f702c63b84e34bfade45994103a5e3ae30584c5b84a70f05",
+      "duration_s": 223.5,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Violent Shiver",
+      "artist": "Benjamin Booker",
+      "genre": "acoustic",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/Benjamin Booker - Violent Shiver/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/Benjamin Booker - Violent Shiver/notes.mid",
+      "audio_sha256": "04814ab414d47a05cd45e27b331ec35eb642a748fb1f92ed1f839483f514f694",
+      "duration_s": 171.0,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Intentional Heartache",
+      "artist": "Dwight Yoakam",
+      "genre": "country",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Dwight Yoakam - Intentional Heartache/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Dwight Yoakam - Intentional Heartache/notes.mid",
+      "audio_sha256": "758d62bf721827d41e92aef8d562e49cdf2c8e91613c142721647c0f27b4b3fd",
+      "duration_s": 266.4,
+      "source": "rock_band"
+    },
+    {
+      "title": "Can't Let Go",
+      "artist": "Lucinda Williams",
+      "genre": "country",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 2 DLC/Lucinda Williams - Can't Let Go/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 2 DLC/Lucinda Williams - Can't Let Go/notes.mid",
+      "audio_sha256": "62f19384d50b7756eff6c90e08a6884f691563a0f9df3360723a8558cbae5d1a",
+      "duration_s": 214.6,
+      "source": "rock_band"
+    },
+    {
+      "title": "Super Mario Bros. Medley",
+      "artist": "Koji Kondo",
+      "genre": "electronic",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Koji Kondo - Super Mario Bros. Medley/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Koji Kondo - Super Mario Bros. Medley/notes.mid",
+      "audio_sha256": "b2ff9b91aa5b0753a6ea7a56a094c35d5c48a62447cb22bd1b82f9f7a38ebc50",
+      "duration_s": 229.3,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Gloria (Luke Noel III)",
+      "artist": "The Midnight",
+      "genre": "electronic",
+      "audio_path": "/mnt/ml-data/training_songs/Custom/The Midnight - Gloria (Luke Noel III)/song.opus",
+      "midi_path": "/mnt/ml-data/training_songs/Custom/The Midnight - Gloria (Luke Noel III)/notes.mid",
+      "audio_sha256": "2606e59e66ea7d4ee7423fa6388829edf8aa57e70b08bfb59670dac69a7f855e",
+      "duration_s": 297.1,
+      "source": "custom"
+    },
+    {
+      "title": "Finest Girl (Bin Laden Song)",
+      "artist": "The Lonely Island",
+      "genre": "hiphop",
+      "audio_path": "/mnt/ml-data/training_songs/C3/The Lonely Island - Finest Girl (Bin Laden Song)/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/The Lonely Island - Finest Girl (Bin Laden Song)/notes.mid",
+      "audio_sha256": "62fa6005099f4f293ee097fb1adce520cb9b66cac2a83c8fedf8d16a51aba38b",
+      "duration_s": 156.5,
+      "source": "c3-custom"
+    },
+    {
+      "title": "King of Rock",
+      "artist": "Run-DMC",
+      "genre": "hiphop",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Run-DMC - King of Rock/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Run-DMC - King of Rock/notes.mid",
+      "audio_sha256": "8b62a89e4e513160696e049c44e61d9e0c34bd7927aee5d70c8f30557e38824c",
+      "duration_s": 317.2,
+      "source": "rock_band"
+    },
+    {
+      "title": "A Christmas Rock Medley (2x Bass Pedal Expert+)",
+      "artist": "Richard Campbell",
+      "genre": "jazz",
+      "audio_path": "/mnt/ml-data/training_songs/Custom/Richard Campbell - A Christmas Rock Medley (2x Bass Pedal Expert+)/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Custom/Richard Campbell - A Christmas Rock Medley (2x Bass Pedal Expert+)/notes.mid",
+      "audio_sha256": "8077b10c38230730b70a5e88a485b81a4a6cedc5c08097cb6c0740b2f151e0f2",
+      "duration_s": 285.9,
+      "source": "custom"
+    },
+    {
+      "title": "Hip To Be Scared ft. Jacoby Shaddix",
+      "artist": "Ice Nine Kills",
+      "genre": "metal",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Ice Nine Kills - Hip To Be Scared ft. Jacoby Shaddix/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Ice Nine Kills - Hip To Be Scared ft. Jacoby Shaddix/notes.mid",
+      "audio_sha256": "ee930f6eef27bbbe992c0151a648cbe0d2468bcf628ed847563822d1be27a84e",
+      "duration_s": 207.5,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Amaranth",
+      "artist": "Nightwish",
+      "genre": "metal",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Nightwish - Amaranth/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Nightwish - Amaranth/notes.mid",
+      "audio_sha256": "890df9715d9d9bba10bf5b0c4d801dfab9ff5a9c230e3af9e0b55fda20781624",
+      "duration_s": 235.3,
+      "source": "rock_band"
+    },
+    {
+      "title": "Bet On It",
+      "artist": "High School Musical Cast",
+      "genre": "pop",
+      "audio_path": "/mnt/ml-data/training_songs/C3/High School Musical Cast - Bet On It/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/High School Musical Cast - Bet On It/notes.mid",
+      "audio_sha256": "2798f3759db1d85ae623b46a895346b3deebdb8867e5ff051fef2dc345ab428f",
+      "duration_s": 202.6,
+      "source": "c3-custom"
+    },
+    {
+      "title": "All the Things She Said",
+      "artist": "t.A.T.u.",
+      "genre": "pop",
+      "audio_path": "/mnt/ml-data/training_songs/Custom/t.A.T.u. - All the Things She Said/t.A.T.u. - All the Things She Said/guitar.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Custom/t.A.T.u. - All the Things She Said/t.A.T.u. - All the Things She Said/notes.mid",
+      "audio_sha256": "cc10f0baa644d45bab05942379985d0789e30455cfe9d8dcae43afdee2c2dfb6",
+      "duration_s": 218.5,
+      "source": "custom"
+    },
+    {
+      "title": "O.D. (Combined Guitar) (Bloodline)",
+      "artist": "Polyphia",
+      "genre": "prog",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Polyphia - O.D. (Combined Guitar) (Bloodline)/Polyphia - O.D. (Combined Guitar) (Bloodline)/guitar.opus",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Polyphia - O.D. (Combined Guitar) (Bloodline)/Polyphia - O.D. (Combined Guitar) (Bloodline)/notes.mid",
+      "audio_sha256": "8553c7ee3a0985d1635a8e4fc5042e54e7cd18caba5cd0d83414820075253078",
+      "duration_s": 203.1,
+      "source": "c3-custom"
+    },
+    {
+      "title": "To Be With  You",
+      "artist": "Mr. Big",
+      "genre": "prog",
+      "audio_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Mr. Big - To Be With  You/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/Rock Band/DLC/Rock Band 3 DLC/Mr. Big - To Be With  You/notes.mid",
+      "audio_sha256": "38b894db1ffeb408206e95542e7b9bf70611669f0f05279eb360df1bb0ed9c7d",
+      "duration_s": 203.1,
+      "source": "rock_band"
+    },
+    {
+      "title": "Devotion and Desire",
+      "artist": "Bayside",
+      "genre": "punk",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Bayside - Devotion and Desire/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Bayside - Devotion and Desire/notes.mid",
+      "audio_sha256": "3f7a5373a52ff7df713c1030a36075d95608ef09f30aef862a409a511ee42dc1",
+      "duration_s": 214.3,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Until the Day I Die",
+      "artist": "Story of the Year",
+      "genre": "punk",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Story of the Year - Until the Day I Die/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Story of the Year - Until the Day I Die/notes.mid",
+      "audio_sha256": "a0593752834d4defca2c7d89d6f607acbe7877bd62b76e3e186c1bd6e439a4e9",
+      "duration_s": 236.1,
+      "source": "c3-custom"
+    },
+    {
+      "title": "Milwaukee",
+      "artist": "The Both",
+      "genre": "rock",
+      "audio_path": "/mnt/ml-data/training_songs/RockBand4/The Both - Milwaukee/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/RockBand4/The Both - Milwaukee/notes.mid",
+      "audio_sha256": "7ee3ea097cf5ea3c86c6ff67558dcbb1bc1cb556bcba42a67202887e993218de",
+      "duration_s": 265.5,
+      "source": "rock_band_4"
+    },
+    {
+      "title": "Into The Ocean",
+      "artist": "Blue October",
+      "genre": "rock",
+      "audio_path": "/mnt/ml-data/training_songs/C3/Blue October - Into The Ocean/song.ogg",
+      "midi_path": "/mnt/ml-data/training_songs/C3/Blue October - Into The Ocean/notes.mid",
+      "audio_sha256": "d8af1a05045a29477170b2373cc645df3c5de0ed49f1f6c80a193eacf28ac8eb",
+      "duration_s": 246.8,
+      "source": "c3-custom"
+    }
+  ],
+  "rejected": []
+}
