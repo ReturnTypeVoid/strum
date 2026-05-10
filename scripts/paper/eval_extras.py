@@ -39,32 +39,74 @@ LANE_ORDER = ["kick", "red", "yellow", "blue", "green"]
 
 
 def parse_drum_track(midi_path: Path) -> tuple[list[tuple[float, int]], list[tuple[float, int]]]:
-    """Return (onsets[(t,pitch)], tom_markers[(t,pitch)]) from PART DRUMS."""
+    """Return (onsets[(t,pitch)], tom_markers[(t,pitch)]) from PART DRUMS.
+
+    Tempo events live on the conductor track (track 0) in Clone Hero / YARG
+    MIDIs, not on PART DRUMS.  We build a global tempo map first.
+    """
     try:
         mid = mido.MidiFile(str(midi_path), clip=True)
     except Exception:
         return [], []
+
+    tempo_events: list[tuple[int, int]] = [(0, 500_000)]
+    for track in mid.tracks:
+        t = 0
+        for msg in track:
+            t += msg.time
+            if msg.type == "set_tempo":
+                tempo_events.append((t, msg.tempo))
+    dedup: dict[int, int] = {}
+    for tick, tempo in sorted(tempo_events, key=lambda x: x[0]):
+        dedup[tick] = tempo
+    tempo_map = sorted(dedup.items())
+
+    def tick_to_seconds(target_tick: int) -> float:
+        elapsed_s = 0.0
+        for i, (tick, tempo) in enumerate(tempo_map):
+            next_tick = tempo_map[i + 1][0] if i + 1 < len(tempo_map) else None
+            if next_tick is None or target_tick <= next_tick:
+                elapsed_s += mido.tick2second(target_tick - tick, mid.ticks_per_beat, tempo)
+                return elapsed_s
+            elapsed_s += mido.tick2second(next_tick - tick, mid.ticks_per_beat, tempo)
+        return elapsed_s
+
     onsets: list[tuple[float, int]] = []
     toms: list[tuple[float, int]] = []
     for track in mid.tracks:
         name = next((m.name for m in track if m.type == "track_name"), "")
         if name != "PART DRUMS":
             continue
-        tempo = 500_000
-        elapsed = 0.0
+        elapsed_ticks = 0
         for msg in track:
-            elapsed += mido.tick2second(msg.time, mid.ticks_per_beat, tempo)
-            if msg.type == "set_tempo":
-                tempo = msg.tempo
-            elif msg.type == "note_on" and msg.velocity > 0:
+            elapsed_ticks += msg.time
+            if msg.type == "note_on" and msg.velocity > 0:
+                t_s = tick_to_seconds(elapsed_ticks)
                 if msg.note in TOM_MARKERS:
-                    toms.append((elapsed, msg.note))
+                    toms.append((t_s, msg.note))
                 elif 96 <= msg.note <= 100:
-                    onsets.append((elapsed, msg.note))
+                    onsets.append((t_s, msg.note))
         break
     onsets.sort()
     toms.sort()
     return onsets, toms
+
+
+def _swap_artist_title(name: str) -> str:
+    if " - " in name:
+        a, b = name.split(" - ", 1)
+        return f"{b} - {a}"
+    return name
+
+
+def _resolve_pred(pred_dir: Path, gt_name: str) -> Path | None:
+    p = pred_dir / gt_name
+    if p.is_dir():
+        return p
+    p = pred_dir / _swap_artist_title(gt_name)
+    if p.is_dir():
+        return p
+    return None
 
 
 def pitch_to_lane(pitch: int) -> str:
@@ -79,8 +121,11 @@ def confusion_matrix(gt_dir: Path, pred_dir: Path, tol_s: float) -> np.ndarray:
         if not gt_song.is_dir():
             continue
         gt_mid = gt_song / "notes.mid"
-        pr_mid = pred_dir / gt_song.name / "notes.mid"
-        if not gt_mid.exists() or not pr_mid.exists():
+        pred_song = _resolve_pred(pred_dir, gt_song.name)
+        if not gt_mid.exists() or pred_song is None:
+            continue
+        pr_mid = pred_song / "notes.mid"
+        if not pr_mid.exists():
             continue
         gt, _ = parse_drum_track(gt_mid)
         pr, _ = parse_drum_track(pr_mid)
@@ -149,10 +194,13 @@ def offset_histogram(gt_dir: Path, stem_dir: Path, out_csv: Path, out_png: Path,
         gt_mid = gt_song / "notes.mid"
         if not gt_mid.exists():
             continue
-        # find matching stem audio (drums.wav under stem_dir/<song>/)
-        cand = list((stem_dir / gt_song.name).glob("**/drums.wav"))
-        if not cand:
-            cand = list((stem_dir / gt_song.name).glob("**/drums.mp3"))
+        # find matching stem audio (drums.wav under stem_dir/<song>/stems/)
+        pred_song = _resolve_pred(stem_dir, gt_song.name)
+        cand: list[Path] = []
+        if pred_song is not None:
+            cand = list(pred_song.glob("**/drums.wav"))
+            if not cand:
+                cand = list(pred_song.glob("**/drums.mp3"))
         if not cand:
             continue
         try:
