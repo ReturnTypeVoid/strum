@@ -115,7 +115,7 @@ Evaluated on a held-out test set from 3,299 human-authored Clone Hero/YARG pro d
 
 ### End-to-end vs human-authored game charts (in-envelope benchmark, n=29)
 
-Aggregate per-instrument onset F1 against ground-truth Clone Hero/YARG charts. Songs were sampled from a held-out pool of 3,299 candidates and pre-screened by a single audio-feature operating envelope: median Demucs `htdemucs_6s` drum-stem RMS (1-second windows, 22050 Hz mono) ≥ 0.018. This excludes acoustic / lo-fi tracks where source separation collapses; 24/65 sampled candidates (37%) failed the envelope. Eval is Expert difficulty, ±100 ms tolerance with a per-song global offset search (±200 ms / 10 ms steps) to neutralize chart-sync conventions.
+Aggregate per-instrument onset F1 against ground-truth Clone Hero/YARG charts. Songs were sampled from a held-out pool of 3,299 candidates and pre-screened by a single audio-feature operating envelope: median Demucs `htdemucs_6s` drum-stem RMS (1-second windows, 22050 Hz mono) ≥ 0.018. Eval is Expert difficulty, ±100 ms tolerance with a per-song global offset search (±200 ms / 10 ms steps) to neutralize chart-sync conventions.
 
 | Instrument | F1 | Precision | Recall |
 |------------|------|-----------|--------|

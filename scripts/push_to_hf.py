@@ -116,10 +116,9 @@ Held-out test set (from 3,299 human-authored Pro Drum charts):
 End-to-end vs ground-truth Clone Hero / YARG charts on an **in-envelope
 benchmark** of 29 songs sampled from a 3,299-song held-out pool. Songs were
 pre-screened with a single audio-feature gate (median Demucs `htdemucs_6s`
-drum-stem RMS ≥ 0.018, 1 s windows at 22050 Hz mono) to exclude acoustic /
-lo-fi tracks where source separation collapses. 24/65 sampled candidates
-(37%) failed the envelope. Eval is Expert difficulty, ±100 ms tolerance,
-with a per-song global offset search (±200 ms / 10 ms steps).
+drum-stem RMS ≥ 0.018, 1 s windows at 22050 Hz mono). Eval is Expert
+difficulty, ±100 ms tolerance, with a per-song global offset search
+(±200 ms / 10 ms steps).
 
 | Instrument | F1    | Precision | Recall |
 |------------|-------|-----------|--------|
