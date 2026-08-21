@@ -875,7 +875,7 @@ class VocalsCharter:
             
             if artist and title:
                 logger.info(f"Searching for lyrics: {artist} - {title}")
-                lyrics_result = fetch_lyrics(artist, title)
+                lyrics_result = fetch_lyrics(artist, title, duration_sec=librosa.get_duration(path=audio_path))
                 print(
                     f"[OCTAVE] LYRICS FETCH RESULT: "
                     f"artist={artist!r} title={title!r} "

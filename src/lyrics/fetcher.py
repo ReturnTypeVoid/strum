@@ -85,7 +85,7 @@ def fetch_from_lrclib(artist: str, title: str, duration_sec: Optional[float] = N
             'track_name': title,
         }
         if duration_sec:
-            params['duration'] = int(duration_sec)
+            params['duration'] = round(duration_sec)
         
         url = 'https://lrclib.net/api/get?' + urllib.parse.urlencode(params)
         logger.info(f"Fetching lyrics from LRCLIB: {artist} - {title}")
