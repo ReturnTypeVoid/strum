@@ -891,27 +891,16 @@ class ChartEnhancer:
             if not expert_lanes:
                 continue
 
-            if previous_medium_lane is None:
-                chosen_lane = expert_lanes[len(expert_lanes) // 2]
+            # Medium keeps simple chords.
+            # Preserve up to two lanes when Expert has a chord.
+            # Otherwise keep a single lane.
+            if len(expert_lanes) >= 2:
+                medium_lane_for_tick[tick] = expert_lanes[:2]
+                previous_medium_lane = expert_lanes[0]
             else:
-                alternatives = [
-                    lane for lane in expert_lanes
-                    if lane != previous_medium_lane
-                ]
-
-                if alternatives:
-                    chosen_lane = min(
-                        alternatives,
-                        key=lambda lane: (
-                            abs(lane - previous_medium_lane),
-                            lane,
-                        ),
-                    )
-                else:
-                    chosen_lane = expert_lanes[0]
-
-            medium_lane_for_tick[tick] = chosen_lane
-            previous_medium_lane = chosen_lane
+                chosen_lane = expert_lanes[0]
+                medium_lane_for_tick[tick] = [chosen_lane]
+                previous_medium_lane = chosen_lane
 
         # Second pass: filter events
         filtered_events = []
@@ -942,7 +931,7 @@ class ChartEnhancer:
                         lane = note - 72
                         chosen_lane = medium_lane_for_tick.get(tick)
 
-                        if chosen_lane is not None and lane != chosen_lane:
+                        if chosen_lane is not None and lane not in chosen_lane:
                             continue
 
                 # Easy range (60-64): heavy thinning, 3 lanes only
