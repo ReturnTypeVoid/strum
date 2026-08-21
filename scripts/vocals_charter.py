@@ -856,6 +856,14 @@ class VocalsCharter:
             if artist and title:
                 logger.info(f"Searching for lyrics: {artist} - {title}")
                 lyrics_result = fetch_lyrics(artist, title)
+                print(
+                    f"[OCTAVE] LYRICS FETCH RESULT: "
+                    f"artist={artist!r} title={title!r} "
+                    f"result={type(lyrics_result).__name__ if lyrics_result else None} "
+                    f"source={getattr(lyrics_result, 'source', None)!r} "
+                    f"synced={len(getattr(lyrics_result, 'synced', None) or [])}",
+                    flush=True
+                )
                 if lyrics_result:
                     logger.info(f"Found lyrics from {lyrics_result.source}" +
                               (f" (synced: {len(lyrics_result.synced)} lines)" if lyrics_result.synced else ""))
@@ -867,14 +875,22 @@ class VocalsCharter:
         # LRCLIB supplies the authoritative lyric sequence and line timing.
         # Whisper remains the fallback when synced lyrics are unavailable.
         if lyrics_result and lyrics_result.synced:
+            print(
+                f"[OCTAVE] VOCALS BRANCH: synced LRCLIB ({len(lyrics_result.synced)} lines)",
+                flush=True
+            )
             logger.info(
                 f"Using synced LRCLIB lyrics ({len(lyrics_result.synced)} lines)"
             )
-            words = self._synced_lyrics_to_words(
+            logger.info("Using Whisper only for acoustic word timing")
+            whisper_words = self.transcribe_lyrics(audio_path)
+            words = self._hybrid_synced_lyrics_to_words(
                 lyrics_result.synced,
-                audio_path
+                whisper_words,
+                audio_path,
             )
         else:
+            print("[OCTAVE] VOCALS BRANCH: Whisper fallback", flush=True)
             logger.info("Using Whisper for word-level timing detection")
             words = self.transcribe_lyrics(audio_path)
 
@@ -1069,6 +1085,176 @@ class VocalsCharter:
         logger.info(f"Converted {len(synced)} synced lines to {len(words)} words (offset: {offset:+.2f}s, scale: {scale:.4f})")
         return words
     
+
+    def _hybrid_synced_lyrics_to_words(
+        self,
+        synced: list[SyncedLyric],
+        whisper_words: list[dict],
+        audio_path: str,
+    ) -> list[dict]:
+        """
+        Combine authoritative LRCLIB text/line timing with Whisper word timing.
+
+        LRCLIB decides which words exist. Whisper only supplies acoustic timing.
+        Missing or mismatched LRCLIB words are interpolated between nearby
+        Whisper-aligned words rather than being dropped.
+        """
+        import re
+        from difflib import SequenceMatcher
+
+        offset, scale = self._calculate_time_warp(synced, audio_path)
+
+        def warp_time(t: float) -> float:
+            return t * scale + offset
+
+        def clean(word: str) -> str:
+            return re.sub(r"[^\w']", "", word.lower())
+
+        def similarity(a: str, b: str) -> float:
+            a = clean(a)
+            b = clean(b)
+
+            if not a or not b:
+                return 0.0
+            if a == b:
+                return 1.0
+
+            # Singing contractions commonly differ between LRCLIB and Whisper:
+            # Dreamin' <-> dreaming, droppin' <-> dropping, waitin' <-> waiting.
+            a_loose = a.rstrip("'")
+            b_loose = b.rstrip("'")
+
+            if a_loose == b_loose:
+                return 0.98
+
+            # Treat dropped-g spellings as strong matches.
+            if a_loose.endswith("in") and b_loose == a_loose + "g":
+                return 0.95
+            if b_loose.endswith("in") and a_loose == b_loose + "g":
+                return 0.95
+
+            return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+        output = []
+
+        for line_idx, lyric in enumerate(synced):
+            line_text = lyric.text.strip()
+            if not line_text:
+                continue
+
+            line_start = max(0.0, warp_time(lyric.time))
+            next_time = (
+                synced[line_idx + 1].time
+                if line_idx + 1 < len(synced)
+                else lyric.time + 3.0
+            )
+            line_end = max(line_start + 0.1, warp_time(next_time))
+
+            lrc_words = line_text.split()
+            if not lrc_words:
+                continue
+
+            # Pull Whisper words overlapping this LRCLIB line, with a small
+            # boundary allowance because Whisper can start/end slightly early.
+            candidates = [
+                w for w in whisper_words
+                if w["start"] < line_end + 0.35
+                and w["end"] > line_start - 0.35
+            ]
+
+            # Greedy ordered fuzzy alignment. LRCLIB remains authoritative:
+            # this only identifies useful timing anchors.
+            anchors = {}
+            whisper_pos = 0
+
+            for lrc_pos, lrc_word in enumerate(lrc_words):
+                best_idx = None
+                best_score = 0.0
+
+                # Search forward only so repeated words cannot jump backwards.
+                search_end = min(len(candidates), whisper_pos + 8)
+
+                for wi in range(whisper_pos, search_end):
+                    score = similarity(lrc_word, candidates[wi]["word"])
+                    if score > best_score:
+                        best_score = score
+                        best_idx = wi
+
+                if best_idx is not None and best_score >= 0.72:
+                    anchors[lrc_pos] = (
+                        float(candidates[best_idx]["start"]),
+                        float(candidates[best_idx]["end"]),
+                    )
+                    whisper_pos = best_idx + 1
+
+            # Build timings for every LRCLIB word. Unmatched words are
+            # interpolated between surrounding matched anchors.
+            for pos, word in enumerate(lrc_words):
+                if pos in anchors:
+                    start, end = anchors[pos]
+
+                else:
+                    prev_pos = max(
+                        (p for p in anchors if p < pos),
+                        default=None,
+                    )
+                    next_pos = min(
+                        (p for p in anchors if p > pos),
+                        default=None,
+                    )
+
+                    if prev_pos is not None and next_pos is not None:
+                        left = anchors[prev_pos][1]
+                        right = anchors[next_pos][0]
+                        slots = next_pos - prev_pos
+                        slot = max(0.06, (right - left) / slots)
+
+                        start = left + slot * (pos - prev_pos - 1)
+                        end = min(
+                            right,
+                            start + slot * 0.9,
+                        )
+
+                    elif prev_pos is not None:
+                        left = anchors[prev_pos][1]
+                        remaining = len(lrc_words) - prev_pos - 1
+                        slot = max(
+                            0.08,
+                            (line_end - left) / max(1, remaining),
+                        )
+                        start = left + slot * (pos - prev_pos - 1)
+                        end = min(line_end, start + slot * 0.9)
+
+                    elif next_pos is not None:
+                        right = anchors[next_pos][0]
+                        slots = max(1, next_pos)
+                        slot = max(
+                            0.08,
+                            (right - line_start) / slots,
+                        )
+                        start = line_start + slot * pos
+                        end = min(right, start + slot * 0.9)
+
+                    else:
+                        slot = (line_end - line_start) / len(lrc_words)
+                        start = line_start + slot * pos
+                        end = start + slot * 0.9
+
+                # Keep each word broadly inside its LRCLIB line.
+                start = max(line_start - 0.35, start)
+                end = min(line_end + 0.35, max(start + 0.05, end))
+
+                output.append({
+                    "word": word,
+                    "start": start,
+                    "end": end,
+                })
+
+        logger.info(
+            f"Hybrid LRCLIB/Whisper alignment produced {len(output)} words "
+            f"from {len(synced)} synced lines"
+        )
+        return output
     def _align_lyrics_to_whisper(
         self,
         whisper_words: list[dict],
