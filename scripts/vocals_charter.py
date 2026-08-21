@@ -863,22 +863,33 @@ class VocalsCharter:
         # Step 2: Detect pitches (frame-level for pitch lookup)
         times, pitches, confidences, _ = self.detect_pitches(audio_path)
         
-        # Step 3: Always use Whisper for timing (detects actual audio)
-        # Then optionally use LRCLIB lyrics to correct the text
-        logger.info("Using Whisper for word-level timing detection")
-        words = self.transcribe_lyrics(audio_path)
-        
-        # If we have LRCLIB lyrics, use them to correct Whisper's text
-        # (Whisper hears the audio correctly timing-wise, but may mishear words)
-        if lyrics_result and lyrics_result.text:
-            words = self._align_lyrics_to_whisper(words, lyrics_result.text)
-        
-        # Step 3.5: Dynamic alignment - snap words to actual vocal onsets
-        # This fixes variable Whisper latency throughout the song
+        # Step 3: Prefer synced LRCLIB lyrics when available.
+        # LRCLIB supplies the authoritative lyric sequence and line timing.
+        # Whisper remains the fallback when synced lyrics are unavailable.
+        if lyrics_result and lyrics_result.synced:
+            logger.info(
+                f"Using synced LRCLIB lyrics ({len(lyrics_result.synced)} lines)"
+            )
+            words = self._synced_lyrics_to_words(
+                lyrics_result.synced,
+                audio_path
+            )
+        else:
+            logger.info("Using Whisper for word-level timing detection")
+            words = self.transcribe_lyrics(audio_path)
+
+            # Plain, non-synced lyrics can still correct Whisper text.
+            if lyrics_result and lyrics_result.text:
+                words = self._align_lyrics_to_whisper(
+                    words,
+                    lyrics_result.text
+                )
+
+        # Step 3.5: Refine word starts against detected vocal onsets.
         if self.dynamic_alignment:
             onset_times = self.detect_vocal_onsets(audio_path)
             words = self.align_words_to_onsets(words, onset_times)
-        
+
         # Step 4: Create notes from lyrics with pitch lookup (lyrics-driven approach)
         notes = self._lyrics_to_notes(words, times, pitches, confidences)
         
