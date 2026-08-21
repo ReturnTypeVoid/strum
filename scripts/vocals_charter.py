@@ -1447,7 +1447,7 @@ class VocalsCharter:
         
         filtered = []
         
-        for note in notes:
+        for i, note in enumerate(notes):
             duration = note.end_time - note.start_time
             
             if duration >= min_duration:
@@ -1455,7 +1455,14 @@ class VocalsCharter:
                 filtered.append(note)
             elif note.lyric and note.lyric.strip():
                 # Has a lyric - MUST keep this note, just extend duration
-                note.end_time = note.start_time + min_duration
+                # Aim for min_duration, but never extend into the next note.
+                target_end = note.start_time + min_duration
+                if i + 1 < len(notes):
+                    target_end = min(target_end, notes[i + 1].start_time)
+
+                # Sequential alignment guarantees the next start is later,
+                # but retain a tiny positive duration as a final safeguard.
+                note.end_time = max(note.end_time, target_end)
                 filtered.append(note)
             elif filtered:
                 # No lyric, too short - extend previous note's duration
