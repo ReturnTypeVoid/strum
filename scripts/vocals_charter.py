@@ -1472,50 +1472,42 @@ class VocalsCharter:
                 note.end_time = note.start_time + min_duration
                 filtered.append(note)
         
-        # CRITICAL: Fix any overlaps without dropping notes
-        # Sort by start time first
+        # CRITICAL: preserve chronological order without moving note starts.
         filtered.sort(key=lambda n: n.start_time)
-        
-        # Make multiple passes until no overlaps remain
-        for _ in range(3):  # Up to 3 passes
-            had_overlap = False
-            for i in range(len(filtered) - 1):
-                current = filtered[i]
-                next_note = filtered[i + 1]
 
-                # Connected notes (slides/melismas): allow them to TOUCH —
-                # YARG/CH draws a smooth slide when end == next.start.
-                # Forcing a 10ms gap on these caused the stair-step look.
-                if current.connects_to_next:
-                    if current.end_time != next_note.start_time:
-                        current.end_time = next_note.start_time
-                    if current.end_time - current.start_time < 0.03:
-                        current.end_time = current.start_time + 0.03
-                    continue
+        for i in range(len(filtered) - 1):
+            current = filtered[i]
+            next_note = filtered[i + 1]
 
-                min_gap = 0.01  # 10ms minimum gap (only for unconnected notes)
+            available = max(0.0, next_note.start_time - current.start_time)
 
-                # If current extends past next's start, truncate current
-                if current.end_time > next_note.start_time - min_gap:
-                    current.end_time = next_note.start_time - min_gap
-                    had_overlap = True
+            if current.connects_to_next:
+                # Slides/melismas may touch the following note exactly.
+                current.end_time = min(current.end_time, next_note.start_time)
+                if current.end_time <= current.start_time:
+                    current.end_time = min(
+                        next_note.start_time,
+                        current.start_time + max(0.001, available),
+                    )
+            else:
+                # Prefer a 10ms gap and 10ms duration, but shrink the gap
+                # when rapid lyrics do not leave enough room for both.
+                min_duration = 0.01
+                desired_gap = 0.01
+                gap = min(
+                    desired_gap,
+                    max(0.0, available - min_duration),
+                )
+                latest_end = next_note.start_time - gap
 
-                # If still overlapping after truncation (start times too close),
-                # pull current's START back rather than shifting next forward
-                # — shifting next is what caused song-long timing drift.
-                if current.end_time > next_note.start_time - min_gap:
-                    new_end = next_note.start_time - min_gap
-                    current.start_time = max(0.0, new_end - 0.05)
-                    current.end_time = new_end
-                    had_overlap = True
+                current.end_time = min(current.end_time, latest_end)
 
-                # Ensure current still has valid duration (at least 30ms)
-                if current.end_time - current.start_time < 0.03:
-                    current.end_time = current.start_time + 0.03
-            
-            if not had_overlap:
-                break
-        
+                if current.end_time <= current.start_time:
+                    current.end_time = min(
+                        next_note.start_time,
+                        current.start_time + max(0.001, available),
+                    )
+
         # Count lyrics preserved
         input_lyrics = sum(1 for n in notes if n.lyric and n.lyric.strip())
         output_lyrics = sum(1 for n in filtered if n.lyric and n.lyric.strip())
