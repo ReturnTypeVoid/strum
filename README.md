@@ -1,3 +1,109 @@
+> [!IMPORTANT]
+> # Fork disclosure, attribution, and validation status
+>
+> **This repository is an experimental fork of STRUM. All credit for the original STRUM project, its models, architecture, research, design, and upstream implementation belongs to `opria123` and the original upstream contributors.**
+>
+> The work unique to this fork is **AI-generated work, not my own original implementation**. Fork-specific code changes, patches, tuning, debugging changes, documentation changes, and supporting development have been generated with AI. I am directing the work, identifying failures, testing results, reviewing changes, and deciding what is retained, but I do not want the implementation presented as though I personally authored it.
+>
+> This is **not blind one-shot "vibe coding."** Changes are generated in response to concrete transcription or charting problems and are repeatedly tested and revised before being retained.
+>
+> Validation used during development has included, where applicable:
+>
+> - source and Git diff review;
+> - Python syntax and import checks;
+> - semantic/AST comparison against known-good source;
+> - explicit regression testing against upstream STRUM behavior;
+> - real end-to-end transcription of production songs;
+> - inspection of generated MIDI and chart structure;
+> - visual inspection in **Moonscraper**;
+> - actual chart playtesting;
+> - comparison against human-authored Clone Hero/YARG charts;
+> - corpus-based measurement of note density, chord size, fret and lane usage, difficulty progression, containment, timing, and other charting characteristics;
+> - testing of online/synced-lyrics and offline/Whisper-only vocal paths;
+> - repeated reproduction of timing, lyric, difficulty, and fret-mapping failures using retained intermediate data.
+>
+> The distinction matters: the implementation is AI-generated, but changes are not accepted merely because they compile or look plausible. They are expected to survive repeated testing against the behavior this fork is trying to achieve.
+>
+> These checks reduce risk but **do not guarantee correctness**. This remains an experimental fork and its output should still be reviewed before publication or serious use.
+>
+> ## Development relationship with the OCTAVE fork
+>
+> This STRUM fork is currently used directly by:
+>
+> `ReturnTypeVoid/octave`
+>
+> The OCTAVE fork has intentionally changed its STRUM bootstrap source away from the upstream STRUM Git URL and toward this fork.
+>
+> That is a development and reproducibility decision, not an attempt to present this repository as a replacement for upstream STRUM.
+>
+> There is still substantial work to do before the overall workflow reaches the state I ultimately want. While that work continues, keeping OCTAVE tied to this STRUM fork provides a sustainable way to:
+>
+> - clone the OCTAVE repository onto a fresh system and retrieve the STRUM source it was developed against;
+> - reproduce the working pipeline without manually patching a downloaded STRUM cache;
+> - develop changes across OCTAVE and STRUM together when a behavior spans both projects;
+> - keep experimental modifications version-controlled and auditable;
+> - avoid mixing unfinished fork-specific behavior into upstream repositories prematurely.
+>
+> Once the system reaches a more stable and well-validated state, the goal is to review the accumulated changes and begin preparing focused, maintainable pull requests for the appropriate upstream repositories where the changes are suitable.
+>
+> Upstream maintainers should not be expected to review a moving experimental target, so this fork-first development phase provides room to test and refine the work before considering upstream contribution.
+>
+> ## Fork pipeline and related repositories
+>
+> **STRUM fork**
+>
+> `ReturnTypeVoid/strum`
+>
+> Contains the customized transcription engine and fork-specific behavior.
+>
+> **OCTAVE fork**
+>
+> `ReturnTypeVoid/octave`
+>
+> Provides the orchestration/editor environment and currently bootstraps this STRUM fork as its runtime source.
+>
+> **Original upstream projects**
+>
+> `opria123/strum`
+>
+> `opria123/octave`
+>
+> The upstream repositories remain the authoritative source for the original projects. Fork-specific behavior described here should not be attributed to upstream.
+>
+> **Companion chart-processing / helper-scripts repository — forthcoming**
+>
+> A separate repository is planned for additional chart-processing tools used in the current workflow. These scripts are an important part of the work toward making generated charts behave more like human-authored charts.
+>
+> Current development includes tooling such as `chart_reducer.py`, which is being calibrated against human-authored chart corpora rather than relying solely on arbitrary reduction rules.
+>
+> That work includes areas such as:
+>
+> - Expert-to-Hard/Medium/Easy density progression;
+> - nested difficulty moment selection;
+> - chord-size limits and chord-shape selection;
+> - fret and lane exposure;
+> - repeated-pattern handling;
+> - 5-fret and Guitar Hero Live mappings;
+> - corpus-weighted GHL chord-shape selection;
+> - lower-difficulty containment behavior;
+> - minimum inter-note timing cleanup;
+> - sustain reduction;
+> - beat-aware note selection;
+> - comparison of generated distributions against real human-authored material.
+>
+> Because of this additional post-processing, the final charts produced by the current workflow are the result of a larger pipeline:
+>
+> **audio -> OCTAVE orchestration -> STRUM transcription -> calibrated helper-script processing -> Moonscraper inspection -> playtesting**
+>
+> The behavior of those final charts should therefore **not be interpreted as a benchmark of upstream STRUM by itself**.
+>
+> ## Documentation note
+>
+> Much of the README below is inherited from upstream STRUM and describes the original project. Some upstream descriptions may not exactly represent behavior in this experimental fork. Fork-specific documentation will continue to be updated as the modified pipeline stabilizes.
+>
+> ---
+>
+
 <p align="center">
   <img src="assets/logo.png" alt="STRUM Logo" width="200"/>
 </p>
