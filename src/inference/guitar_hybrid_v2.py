@@ -559,7 +559,7 @@ class GuitarHybridV2Charter:
         snap_window_s: float = 0.075,
         min_pitch_amplitude: float = 0.3,
         sustain_min_duration_s: float = 0.40,
-        max_chord_size: int = 3,
+        max_chord_size: int = 5,
         harmonic_collapse: bool = False,
     ) -> list[GuitarEvent]:
         """Full hybrid pipeline.
