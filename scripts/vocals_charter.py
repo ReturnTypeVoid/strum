@@ -366,6 +366,126 @@ class VocalsCharter:
                 if len(candidates) > 1 and candidates[1][2] < tolerance * 0.6:
                     new_start = original_start
                     shifts.append(0)
+                else:
+                    used_onsets.add(best_idx)
+                    new_start = best_onset
+                    shifts.append(new_start - original_start)
+            else:
+                # No onset nearby - keep original timing
+                new_start = original_start
+                shifts.append(0)
+
+            # Whisper often extends a word's end-time to fill the gap until
+            # the next word, which historically caused drift. We protect
+            # against word-to-word over-extension via the strict trim-prev
+            # pass below (clips prev.end to next.start - min_gap). For
+            # phrase-ending notes (no nearby next word), preserve Whisper's
+            # duration up to a moderate cap so sustained held-out notes
+            # actually ring out, but bounded so they don't trail forever.
+            # 2.5s covers typical sung syllables (incl. long phrase ends);
+            # earlier 4.0s was perceptibly too long on rapid songs.
+            new_end = new_start + min(original_duration, 2.5)
+
+            aligned_words.append({
+                'word': word['word'],
+                'start': new_start,
+                'end': new_end,
+            })
+
+        # CRITICAL: enforce strict sequential ordering by ALWAYS TRIMMING
+        # the previous word. Never push the current word forward — that's
+        # what caused song-long drift. If a word's snapped start lands before
+        # the previous word's end, the previous word was over-extended
+        # (Whisper bug) and we should clip it.
+        for i in range(1, len(aligned_words)):
+            prev = aligned_words[i - 1]
+            curr = aligned_words[i]
+            min_gap = 0.02  # 20ms gap between words
+
+            if prev['end'] > curr['start'] - min_gap:
+                prev['end'] = curr['start'] - min_gap
+                if prev['end'] - prev['start'] < 0.05:
+                    # Prev start landed too close to curr start too — pull
+                    # prev start back rather than pushing curr forward.
+                    prev['start'] = max(0.0, curr['start'] - min_gap - 0.05)
+                    prev['end'] = curr['start'] - min_gap
+        
+        # Log alignment statistics
+        if shifts:
+            nonzero_shifts = [s for s in shifts if s != 0]
+            if nonzero_shifts:
+                avg_shift = np.mean(np.abs(nonzero_shifts)) * 1000
+                max_shift = np.max(np.abs(nonzero_shifts)) * 1000
+            else:
+                avg_shift = 0
+                max_shift = 0
+            aligned_count = len(nonzero_shifts)
+            logger.info(f"Dynamic alignment: {aligned_count}/{len(words)} words adjusted")
+            logger.info(f"  Avg shift: {avg_shift:.1f}ms, Max shift: {max_shift:.1f}ms")
+        
+        return aligned_words
+
+    def _align_words_to_onsets_hybrid(
+        self,
+        words: list[dict],
+        onset_times: np.ndarray,
+        tolerance: float = None
+    ) -> list[dict]:
+        """
+        Dynamically align each word to the nearest detected vocal onset.
+        
+        This fixes variable Whisper latency by snapping each word's start time
+        to when the vocal actually begins in the audio.
+        
+        Also enforces strict sequential ordering - words cannot overlap
+        and each word's end time is capped at the next word's start.
+        
+        Args:
+            words: List of word dicts with 'word', 'start', 'end'
+            onset_times: Array of detected vocal onset times
+            tolerance: Max time to shift a word (default: self.alignment_tolerance)
+            
+        Returns:
+            Words with adjusted timing, strictly sequential
+        """
+        if tolerance is None:
+            tolerance = self.alignment_tolerance
+        
+        if len(onset_times) == 0:
+            logger.warning("No vocal onsets detected, skipping dynamic alignment")
+            return words
+        
+        aligned_words = []
+        shifts = []
+        used_onsets = set()  # Track which onsets we've already assigned
+
+        for i, word in enumerate(words):
+            original_start = word['start']
+            original_end = word['end']
+            original_duration = original_end - original_start
+
+            # Find nearest UNUSED onset within tolerance window
+            search_start = original_start - tolerance
+            search_end = original_start + tolerance
+
+            # Get candidates that haven't been used
+            candidates = []
+            for j, t in enumerate(onset_times):
+                if j not in used_onsets and search_start <= t <= search_end:
+                    candidates.append((j, t, abs(t - original_start)))
+
+            if candidates:
+                # Sort by distance and pick closest
+                candidates.sort(key=lambda x: x[2])
+                best_idx, best_onset, best_dist = candidates[0]
+                # SAFETY: only snap if the chosen onset is clearly isolated
+                # (no other candidate within ~half the tolerance). When there
+                # are multiple onsets nearby (breaths, harmonics, layers) we
+                # have no way to pick the right one and snapping makes things
+                # worse \u2014 trust Whisper instead.
+                if len(candidates) > 1 and candidates[1][2] < tolerance * 0.6:
+                    new_start = original_start
+                    shifts.append(0)
                 elif aligned_words and best_onset <= aligned_words[-1]['start'] + 0.01:
                     # Never let onset snapping reverse authoritative LRCLIB
                     # lyric order. Trust the hybrid timing instead.
@@ -866,6 +986,8 @@ class VocalsCharter:
         
         # Step 1: Try to fetch lyrics from web sources
         lyrics_result = None
+        using_synced_lrclib = False
+
         if self.fetch_lyrics_online:
             # Try to extract artist/title from path if not provided
             if not artist or not title:
@@ -895,6 +1017,8 @@ class VocalsCharter:
         # LRCLIB supplies the authoritative lyric sequence and line timing.
         # Whisper remains the fallback when synced lyrics are unavailable.
         if lyrics_result and lyrics_result.synced:
+            using_synced_lrclib = True
+
             print(
                 f"[OCTAVE] VOCALS BRANCH: synced LRCLIB ({len(lyrics_result.synced)} lines)",
                 flush=True
@@ -924,13 +1048,32 @@ class VocalsCharter:
         # Step 3.5: Refine word starts against detected vocal onsets.
         if self.dynamic_alignment:
             onset_times = self.detect_vocal_onsets(audio_path)
-            words = self.align_words_to_onsets(words, onset_times)
+
+            if using_synced_lrclib:
+                words = self._align_words_to_onsets_hybrid(
+                    words,
+                    onset_times,
+                )
+            else:
+                words = self.align_words_to_onsets(
+                    words,
+                    onset_times,
+                )
 
         # Step 4: Create notes from lyrics with pitch lookup (lyrics-driven approach)
         notes = self._lyrics_to_notes(words, times, pitches, confidences)
         
         # Step 5: Filter out tiny spurious notes (under 80ms)
-        notes = self._filter_tiny_notes(notes, min_duration=0.08)
+        if using_synced_lrclib:
+            notes = self._filter_tiny_notes_hybrid(
+                notes,
+                min_duration=0.08,
+            )
+        else:
+            notes = self._filter_tiny_notes(
+                notes,
+                min_duration=0.08,
+            )
         
         # Step 6: Group into phrases
         lead_phrases = self.group_into_phrases(notes)
@@ -1432,6 +1575,93 @@ class VocalsCharter:
         return result
     
     def _filter_tiny_notes(
+        self,
+        notes: list[VocalNote],
+        min_duration: float = 0.08  # Minimum 80ms
+    ) -> list[VocalNote]:
+        """
+        Filter out spurious tiny notes while preserving ALL lyrics.
+        
+        CRITICAL: Never drop a note that has a lyric - just extend its duration.
+        Only merge notes that have no lyric (continuation markers).
+        """
+        if not notes:
+            return notes
+        
+        filtered = []
+        
+        for note in notes:
+            duration = note.end_time - note.start_time
+            
+            if duration >= min_duration:
+                # Note is long enough, keep as-is
+                filtered.append(note)
+            elif note.lyric and note.lyric.strip():
+                # Has a lyric - MUST keep this note, just extend duration
+                note.end_time = note.start_time + min_duration
+                filtered.append(note)
+            elif filtered:
+                # No lyric, too short - extend previous note's duration
+                filtered[-1].end_time = max(filtered[-1].end_time, note.end_time)
+            else:
+                # First note is tiny with no lyric - extend it
+                note.end_time = note.start_time + min_duration
+                filtered.append(note)
+        
+        # CRITICAL: Fix any overlaps without dropping notes
+        # Sort by start time first
+        filtered.sort(key=lambda n: n.start_time)
+        
+        # Make multiple passes until no overlaps remain
+        for _ in range(3):  # Up to 3 passes
+            had_overlap = False
+            for i in range(len(filtered) - 1):
+                current = filtered[i]
+                next_note = filtered[i + 1]
+
+                # Connected notes (slides/melismas): allow them to TOUCH —
+                # YARG/CH draws a smooth slide when end == next.start.
+                # Forcing a 10ms gap on these caused the stair-step look.
+                if current.connects_to_next:
+                    if current.end_time != next_note.start_time:
+                        current.end_time = next_note.start_time
+                    if current.end_time - current.start_time < 0.03:
+                        current.end_time = current.start_time + 0.03
+                    continue
+
+                min_gap = 0.01  # 10ms minimum gap (only for unconnected notes)
+
+                # If current extends past next's start, truncate current
+                if current.end_time > next_note.start_time - min_gap:
+                    current.end_time = next_note.start_time - min_gap
+                    had_overlap = True
+
+                # If still overlapping after truncation (start times too close),
+                # pull current's START back rather than shifting next forward
+                # — shifting next is what caused song-long timing drift.
+                if current.end_time > next_note.start_time - min_gap:
+                    new_end = next_note.start_time - min_gap
+                    current.start_time = max(0.0, new_end - 0.05)
+                    current.end_time = new_end
+                    had_overlap = True
+
+                # Ensure current still has valid duration (at least 30ms)
+                if current.end_time - current.start_time < 0.03:
+                    current.end_time = current.start_time + 0.03
+            
+            if not had_overlap:
+                break
+        
+        # Count lyrics preserved
+        input_lyrics = sum(1 for n in notes if n.lyric and n.lyric.strip())
+        output_lyrics = sum(1 for n in filtered if n.lyric and n.lyric.strip())
+        
+        logger.info(f"Filtered {len(notes)} notes -> {len(filtered)} notes")
+        logger.info(f"  Lyrics preserved: {output_lyrics}/{input_lyrics}")
+        
+        return filtered
+
+    def _filter_tiny_notes_hybrid(
         self,
         notes: list[VocalNote],
         min_duration: float = 0.08  # Minimum 80ms
