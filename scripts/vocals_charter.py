@@ -366,6 +366,11 @@ class VocalsCharter:
                 if len(candidates) > 1 and candidates[1][2] < tolerance * 0.6:
                     new_start = original_start
                     shifts.append(0)
+                elif aligned_words and best_onset <= aligned_words[-1]['start'] + 0.01:
+                    # Never let onset snapping reverse authoritative LRCLIB
+                    # lyric order. Trust the hybrid timing instead.
+                    new_start = original_start
+                    shifts.append(0)
                 else:
                     used_onsets.add(best_idx)
                     new_start = best_onset
@@ -400,16 +405,31 @@ class VocalsCharter:
         for i in range(1, len(aligned_words)):
             prev = aligned_words[i - 1]
             curr = aligned_words[i]
-            min_gap = 0.02  # 20ms gap between words
 
-            if prev['end'] > curr['start'] - min_gap:
-                prev['end'] = curr['start'] - min_gap
-                if prev['end'] - prev['start'] < 0.05:
-                    # Prev start landed too close to curr start too — pull
-                    # prev start back rather than pushing curr forward.
-                    prev['start'] = max(0.0, curr['start'] - min_gap - 0.05)
-                    prev['end'] = curr['start'] - min_gap
-        
+            # Always preserve lyric order. Ensure starts remain at least
+            # 10ms apart; this is a tiny local correction, not cumulative
+            # song-wide pushing.
+            min_start_step = 0.01
+            if curr['start'] < prev['start'] + min_start_step:
+                duration = max(0.01, curr['end'] - curr['start'])
+                curr['start'] = prev['start'] + min_start_step
+                curr['end'] = curr['start'] + duration
+
+            # Prefer a 20ms gap, but very rapid lyrics may not leave enough
+            # room. Reduce the gap locally rather than creating a negative
+            # duration or pulling the previous word backwards.
+            min_duration = 0.01
+            desired_gap = 0.02
+            available = curr['start'] - prev['start']
+            gap = min(desired_gap, max(0.0, available - min_duration))
+            latest_end = curr['start'] - gap
+
+            if prev['end'] > latest_end:
+                prev['end'] = latest_end
+
+            if prev['end'] < prev['start'] + min_duration:
+                prev['end'] = min(curr['start'], prev['start'] + min_duration)
+
         # Log alignment statistics
         if shifts:
             nonzero_shifts = [s for s in shifts if s != 0]
@@ -1243,6 +1263,16 @@ class VocalsCharter:
                 # Keep each word broadly inside its LRCLIB line.
                 start = max(line_start - 0.35, start)
                 end = min(line_end + 0.35, max(start + 0.05, end))
+
+                # LRCLIB word order is authoritative. Whisper can occasionally
+                # return non-monotonic timestamps for neighbouring words/layers.
+                # Never allow a later lyric to start before an earlier lyric.
+                duration = max(0.05, end - start)
+                if output:
+                    min_start = output[-1]["start"] + 0.01
+                    if start < min_start:
+                        start = min_start
+                        end = start + duration
 
                 output.append({
                     "word": word,
