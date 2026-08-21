@@ -861,15 +861,17 @@ class ChartEnhancer:
             if not is_downbeat and random.random() > 0.8:
                 hard_times_to_remove.add(tick)
 
-            # Medium: Keep ~68%, strongly prefer musical beats
-            if not is_downbeat and not is_backbeat:
-                if random.random() > 0.68:
-                    medium_times_to_remove.add(tick)
-            elif not is_downbeat and random.random() > 0.85:
+        # Medium: Keep ~75%, preserve riff identity.
+        if not is_downbeat and not is_backbeat:
+            if random.random() > 0.75:
                 medium_times_to_remove.add(tick)
+        elif not is_downbeat and random.random() > 0.9:
+            medium_times_to_remove.add(tick)
 
-            # Easy: Keep 30%, only beats
-            if not is_on_beat or random.random() > 0.4:
+        # Easy: Keep ~35%, preserve main rhythm.
+        # Keep downbeats and backbeats, allow some off-beat rhythm.
+        if not is_downbeat and not is_backbeat:
+            if random.random() > 0.35:
                 easy_times_to_remove.add(tick)
         
         # Pre-select one Medium lane per retained onset.
