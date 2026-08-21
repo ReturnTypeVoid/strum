@@ -861,17 +861,56 @@ class ChartEnhancer:
             if not is_downbeat and random.random() > 0.8:
                 hard_times_to_remove.add(tick)
 
-            # Medium: Keep 50%, strongly prefer downbeats
+            # Medium: Keep ~68%, strongly prefer musical beats
             if not is_downbeat and not is_backbeat:
-                if random.random() > 0.5:
+                if random.random() > 0.68:
                     medium_times_to_remove.add(tick)
-            elif not is_downbeat and random.random() > 0.7:
+            elif not is_downbeat and random.random() > 0.85:
                 medium_times_to_remove.add(tick)
 
             # Easy: Keep 30%, only beats
             if not is_on_beat or random.random() > 0.4:
                 easy_times_to_remove.add(tick)
         
+        # Pre-select one Medium lane per retained onset.
+        # Use only lanes present in Expert. When Expert gives us
+        # a choice, avoid immediately repeating the previous lane.
+        medium_lane_for_tick = {}
+        previous_medium_lane = None
+
+        for tick in sorted_times:
+            if tick in medium_times_to_remove:
+                continue
+
+            expert_lanes = sorted({
+                n - 96 for n in expert_notes.get(tick, [])
+            })
+
+            if not expert_lanes:
+                continue
+
+            if previous_medium_lane is None:
+                chosen_lane = expert_lanes[len(expert_lanes) // 2]
+            else:
+                alternatives = [
+                    lane for lane in expert_lanes
+                    if lane != previous_medium_lane
+                ]
+
+                if alternatives:
+                    chosen_lane = min(
+                        alternatives,
+                        key=lambda lane: (
+                            abs(lane - previous_medium_lane),
+                            lane,
+                        ),
+                    )
+                else:
+                    chosen_lane = expert_lanes[0]
+
+            medium_lane_for_tick[tick] = chosen_lane
+            previous_medium_lane = chosen_lane
+
         # Second pass: filter events
         filtered_events = []
         
@@ -892,19 +931,18 @@ class ChartEnhancer:
                             if lane not in expert_lanes[:2]:
                                 continue
                 
-                # Medium range (72-76): more thinning, no chords
+                # Medium range (72-76): moderate thinning, single notes
                 elif 72 <= note <= 76:
                     if tick in medium_times_to_remove:
                         continue
-                    # No chords for medium - keep only lowest
+
                     if msg.type == 'note_on' and msg.velocity > 0:
-                        expert_tick_notes = expert_notes.get(tick, [])
-                        if len(expert_tick_notes) > 1:
-                            lane = note - 72
-                            lowest_lane = min(n - 96 for n in expert_tick_notes)
-                            if lane != lowest_lane:
-                                continue
-                
+                        lane = note - 72
+                        chosen_lane = medium_lane_for_tick.get(tick)
+
+                        if chosen_lane is not None and lane != chosen_lane:
+                            continue
+
                 # Easy range (60-64): heavy thinning, 3 lanes only
                 elif 60 <= note <= 64:
                     if tick in easy_times_to_remove:
