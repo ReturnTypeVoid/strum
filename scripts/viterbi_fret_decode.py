@@ -1,36 +1,3 @@
-"""Compatibility shim that re-exports `viterbi_decode` from the orphan
-.pyc cached under ``scripts/__pycache__/`` (the source ``.py`` was lost
-in an earlier cleanup). Restoring this thin module fixes a regression
-where the hybrid guitar pipeline silently dropped to no-op because the
-learned fret-mapper raised ``ModuleNotFoundError``.
-
-If anyone needs to swap in a fresh implementation, just delete this file
-and add a real ``viterbi_decode(P, times=None, fret_change_w=..., ...)``
-in its place.
-"""
-from __future__ import annotations
-
-import importlib.util
-from pathlib import Path
-
-_PYC = Path(__file__).resolve().parent / "__pycache__" / "viterbi_fret_decode.cpython-312.pyc"
-if not _PYC.exists():  # pragma: no cover
-    raise ImportError(
-        f"viterbi_fret_decode source is missing and the cached .pyc "
-        f"({_PYC}) is also gone. Restore one or remove the learned "
-        f"fret mapper from src/inference/guitar_hybrid_v2.py."
-    )
-
-_spec = importlib.util.spec_from_file_location("_viterbi_fret_decode_pyc", str(_PYC))
-_mod = importlib.util.module_from_spec(_spec)
-assert _spec.loader is not None
-_spec.loader.exec_module(_mod)
-
-viterbi_decode = _mod.viterbi_decode
-STATES = _mod.STATES
-STATE_VECS = _mod.STATE_VECS
-
-__all__ = ["viterbi_decode", "STATES", "STATE_VECS"]
 """Viterbi decoder for fret-subset sequences.
 
 Takes per-onset fret probabilities P (N, 5) from the MLP mapper and
