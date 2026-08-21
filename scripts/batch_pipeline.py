@@ -1855,6 +1855,16 @@ song_length = {duration_ms}
                 errors.append(f"vocals: {e}")
                 logger.warning(f"  ⚠ Vocals failed: {e}")
         
+        # Preserve the exact Demucs vocal WAV used for transcription.
+        # This lets us reproduce/debug vocal timing without rerunning separation.
+        if "vocals" in stems:
+            try:
+                _debug_vocals = song_folder / "vocals-debug.wav"
+                shutil.copy2(stems["vocals"], _debug_vocals)
+                logger.info(f"  Preserved production vocal stem: {_debug_vocals}")
+            except Exception as e:
+                logger.warning(f"  Could not preserve production vocal stem: {e}")
+
         # Check if we have ANY transcribed content
         has_content = any([
             drums_chart and drums_chart.hits,
