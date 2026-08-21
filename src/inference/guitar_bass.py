@@ -1031,14 +1031,15 @@ def _reduce_medium(notes: List[GuitarNote], is_bass: bool = False) -> List[Guita
                 else:
                     skip_counter = 0
             else:
-                # Guitar: heavier thinning
+                # Guitar: moderate thinning
+                # Preserve riff identity while reducing density.
                 if gap < 200:
                     skip_counter += 1
-                    if skip_counter % 2 == 0:
+                    if skip_counter % 4 == 0:
                         continue
                 elif gap < 500:
                     skip_counter += 1
-                    if skip_counter % 3 == 0:
+                    if skip_counter % 5 == 0:
                         continue
                 else:
                     skip_counter = 0
