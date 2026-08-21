@@ -2041,31 +2041,12 @@ song_length = {duration_ms}
                                   'end_ms', 'end_time_ms'):
                             if hasattr(n, a) and getattr(n, a) is not None:
                                 setattr(n, a, _snap(getattr(n, a)))
-            # Vocal phrases use start_time / end_time in SECONDS (not ms)
-            # and contain VocalNote objects also in seconds.  These were
-            # being missed entirely by the *_ms attribute scan, leaving
-            # vocal pitches at raw Whisper timestamps (frame-aligned ~20ms
-            # off the grid).
-            for phrases in (lead_phrases, harmony_phrases):
-                if not phrases:
-                    continue
-                for p in phrases:
-                    for a in ('start_time', 'end_time'):
-                        if hasattr(p, a) and getattr(p, a) is not None:
-                            setattr(p, a, _snap_s(getattr(p, a)))
-                    for a in ('start_ms', 'end_ms', 'start_time_ms', 'end_time_ms'):
-                        if hasattr(p, a) and getattr(p, a) is not None:
-                            setattr(p, a, _snap(getattr(p, a)))
-                    for syl_attr in ('syllables', 'words', 'notes'):
-                        for s in (getattr(p, syl_attr, None) or []):
-                            for a in ('start_time', 'end_time'):
-                                if hasattr(s, a) and getattr(s, a) is not None:
-                                    setattr(s, a, _snap_s(getattr(s, a)))
-                            for a in ('time_ms', 'start_ms', 'start_time_ms',
-                                      'end_ms', 'end_time_ms'):
-                                if hasattr(s, a) and getattr(s, a) is not None:
-                                    setattr(s, a, _snap(getattr(s, a)))
-
+        # Vocals intentionally remain at acoustic timing.
+        #
+        # LRCLIB supplies authoritative lyric text/line boundaries and
+        # Whisper/onset detection supplies word-level timing. Quantizing
+        # VocalNote start/end times to the instrumental 32nd-note grid can
+        # collapse or reorder nearby lyrics, so do not snap vocals here.
             notes_path = song_folder / "notes.mid"
             self.create_combined_midi(
                 notes_path,
